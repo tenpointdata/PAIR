@@ -58,6 +58,12 @@ navigation:
       - page: Inference Dispatcher
         path: ../docs/inference-dispatcher.mdx
         slug: inference-dispatcher
+      - page: Wide-Area Mesh
+        path: ../docs/wide-area-mesh.mdx
+        slug: wide-area-mesh
+      - page: GPU Pooling
+        path: ../docs/gpu-pooling.mdx
+        slug: gpu-pooling
   - section: API Reference
     skip-slug: true
     contents:

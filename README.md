@@ -23,6 +23,12 @@ configured client, model source, engine, and node is local.
 > memory, combine GPUs into a larger logical GPU, shard one model across
 > machines, or split an in-flight inference request between nodes.
 
+Changing that is designed but not built. [Distributed inference and GPU
+pooling](docs/gpu-pooling.mdx) is the design for an opt-in second mode where
+several nodes' VRAM backs one model, and [Wide-area mesh](docs/wide-area-mesh.mdx)
+is the design for clustering across Wi-Fi networks, subnets, and locations rather
+than one LAN. Both describe intended behavior, not shipped behavior.
+
 ![Two paired machines in PAIR's Overview. Requests arrive on one and are routed
 across both, with each node reporting live GPU and memory use.](assets/pair-demo.gif)
 
@@ -239,6 +245,17 @@ Each entry assumes the ones before it.
 8. **[Developer guide](docs/developing.mdx)** — read this before contributing:
    where the code lives, how a change travels through the layers, and the
    conventions the project enforces.
+
+Design documents, for work that is specified but not yet shipped. Each states
+plainly what it does and does not do, so read them as intent rather than as a
+description of the current build:
+
+- [Wide-area mesh](docs/wide-area-mesh.mdx) — clustering beyond one LAN:
+  multicast-free discovery, a durable peer address book, relayed paths for nodes
+  that cannot be dialed, and link quality as a routing input.
+- [Distributed inference and GPU pooling](docs/gpu-pooling.mdx) — running one
+  model across several nodes' VRAM via llama.cpp's RPC backend, and the capacity
+  accounting that has to exist first.
 
 Component references, for when you already know what you are looking for:
 
