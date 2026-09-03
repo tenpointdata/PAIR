@@ -323,6 +323,9 @@ Each phase is independently useful and independently shippable.
 
 1. **`shared/peerbook` and `shared/linkq`.** Pure data structures and platform
    probes, testable without a second machine. Nothing consumes them yet.
+
+   *This exists*: both packages are in `services/shared`, with tests. They are
+   not yet imported by any service, so PAIR's behavior is unchanged.
 2. **Endpoint gossip on the existing reconcile channel,** plus reflexive
    reporting. No new port, no new worker. This alone fixes roaming inside one
    site.

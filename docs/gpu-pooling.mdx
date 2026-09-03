@@ -190,12 +190,23 @@ context that runs longer than the one that was planned for. Reserving a fraction
 that looks wasteful on paper is the difference between a pool that loads and one
 that dies at 96%.
 
-**Assignment.** Layers go to devices in proportion to effective free VRAM, then
-get rounded to integers under a constraint that has nothing to do with memory:
-*minimize what crosses the slowest link*. Every layer boundary that falls between
-two machines costs a transfer of the hidden state, so the ordering places
-consecutive layers on the same device and puts the fewest boundaries on the worst
-link.
+**Assignment.** Devices are ordered by link quality first and capacity second,
+then filled in that order until every layer is placed. The ordering decision is
+the consequential one, and it goes against the instinct a throughput scheduler
+would have: layers are *not* spread proportionally across everything eligible.
+
+Spreading them evenly maximizes the number of machine boundaries, and every
+boundary adds a serialized round trip to every generated token. A model that
+would have fitted on two machines, spread across five, is several times slower
+and no more capable. Filling the best-connected device first uses the fewest
+machines that can hold the model, which is also the fastest arrangement that can
+hold it. Each device's share is a consecutive run of layers, because layers are
+evaluated in order and a non-adjacent share would cross the network twice for
+nothing.
+
+Link quality is ordered ahead of capacity for the same reason. Filling a large
+wireless GPU before a smaller wired one produces a pool that holds the model and
+then generates at the speed of the radio — capacity nobody can use.
 
 **Why the network cost has two very different shapes** — and why the plan needs
 both link RTT and link bandwidth rather than one number:
@@ -294,6 +305,11 @@ pool planner needs. That is why the accounting lands first.
 1. **`shared/vrampool` and free-VRAM reporting.** The planner, its cost model,
    and per-GPU availability in `nvpair-node-info`. Testable with no engine, no
    second machine, and no GPU.
+
+   *The planner half of this exists*: `services/shared/vrampool` implements the
+   cost model, the donor policy and its rejection reasons, and the allocator, with
+   tests. Nothing imports it yet, and `nvpair-node-info` does not yet report the
+   free-VRAM and donor fields it consumes.
 2. **llama.cpp as an engine,** in `server` mode only. Useful on its own: a third
    engine for GGUF models.
 3. **Donor mode and `nvpair-pool-agent`,** including the loopback binding and the
