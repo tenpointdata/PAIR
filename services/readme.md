@@ -55,6 +55,8 @@ This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service 
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
+Two packages there belong to work that is designed but not yet wired up, and nothing imports them yet: `shared/linkq` classifies the link to each peer (wired, wireless, cellular; measured round-trip time and throughput) and `shared/peerbook` is the durable address book that lets a peer be found without a multicast announcement. Refer to [Wide-area mesh](../docs/wide-area-mesh.mdx) for what they are for and [GPU pooling](../docs/gpu-pooling.mdx) for why link quality becomes a correctness question rather than a performance one.
+
 The mDNS responder is our own rather than the host's, because Windows ships none. It sets `SO_REUSEADDR` so it shares UDP 5353 with sibling PAIR processes and with a system responder — `avahi-daemon` on Linux, Bonjour where present — needing no configuration on either platform.
 
 The broker feeds every accepted local or peer workload transition plus compact
