@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +19,9 @@ import (
 
 // helperEnv marks the re-executed test binary as the stand-in donor backend.
 const helperEnv = "NVPAIR_POOL_TEST_BACKEND"
+
+// poolHelperEnv marks the re-executed test binary as the stand-in pool server.
+const poolHelperEnv = "NVPAIR_POOL_TEST_SERVER"
 
 // TestPoolDonorHelper is not a test. It is the donor backend the ExecTarget
 // tests run, re-executing this same binary the way os/exec's own tests do, so
@@ -54,6 +59,75 @@ func TestPoolDonorHelper(t *testing.T) {
 	}
 }
 
+// TestPoolServerHelper is not a test either. It stands in for llama-server: it
+// reaches every --rpc endpoint it was given, and only then reports itself
+// healthy.
+//
+// Reaching them is the point. A pool server that merely started proves nothing;
+// one that has exchanged bytes with each donor has proved the whole path —
+// placeholder expansion, the loopback link, cluster mTLS, and the donor's own
+// backend — end to end.
+func TestPoolServerHelper(t *testing.T) {
+	if os.Getenv(poolHelperEnv) == "" {
+		t.Skip("not the pool server helper")
+	}
+	var serve, rpc string
+	for _, arg := range os.Args {
+		if v, ok := strings.CutPrefix(arg, "serve="); ok {
+			serve = v
+		}
+		if v, ok := strings.CutPrefix(arg, "rpc="); ok {
+			rpc = v
+		}
+	}
+	if serve == "" {
+		os.Exit(2)
+	}
+
+	healthy := true
+	for _, endpoint := range strings.Split(rpc, ",") {
+		if endpoint == "" {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", endpoint, 10*time.Second)
+		if err != nil {
+			healthy = false
+			break
+		}
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			healthy = false
+			_ = conn.Close()
+			break
+		}
+		buf := make([]byte, 4)
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "ping" {
+			healthy = false
+		}
+		_ = conn.Close()
+		if !healthy {
+			break
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		if !healthy {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	// Echoes back the argv it was started with, so a test can assert that every
+	// placeholder was expanded rather than passed through.
+	mux.HandleFunc("/argv", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Join(os.Args, " ")))
+	})
+	srv := &http.Server{Addr: serve, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	_ = srv.ListenAndServe()
+	os.Exit(0)
+}
+
 // helperCommand builds a donor command template that re-executes this binary.
 func helperCommand(t *testing.T, bindTemplate string) []string {
 	t.Helper()
@@ -66,13 +140,20 @@ func withHelperEnv(t *testing.T) {
 	t.Setenv(helperEnv, "1")
 }
 
-// shortDonorTimeouts keeps a failing start from waiting out the production
+// shortDonorTunables keeps a failing start from waiting out the production
 // ninety seconds.
-func shortDonorTimeouts(t *testing.T) {
+func shortDonorTunables() donorTunables {
+	return donorTunables{readyTimeout: 15 * time.Second, readyPoll: 50 * time.Millisecond, stopGrace: time.Second}
+}
+
+// helperTarget builds an ExecTarget with test-scale timings.
+func helperTarget(t *testing.T, command []string) *ExecTarget {
 	t.Helper()
-	ready, poll, grace := donorReadyTimeout, donorReadyPoll, donorStopGrace
-	donorReadyTimeout, donorReadyPoll, donorStopGrace = 15*time.Second, 50*time.Millisecond, time.Second
-	t.Cleanup(func() { donorReadyTimeout, donorReadyPoll, donorStopGrace = ready, poll, grace })
+	target := NewExecTarget(command)
+	if target != nil {
+		target.tunables = shortDonorTunables()
+	}
+	return target
 }
 
 func TestNoCommandMeansNoTarget(t *testing.T) {
@@ -86,9 +167,7 @@ func TestNoCommandMeansNoTarget(t *testing.T) {
 
 func TestExecTargetStartsABackendOnLoopback(t *testing.T) {
 	withHelperEnv(t)
-	shortDonorTimeouts(t)
-
-	target := NewExecTarget(helperCommand(t, PlaceholderHost+":"+PlaceholderPort))
+	target := helperTarget(t, helperCommand(t, PlaceholderHost+":"+PlaceholderPort))
 	grant := poolwire.LeaseGrant{LeaseID: "lease-1", PoolID: "pool-1", DeviceIndexes: []int{0, 1}}
 
 	addr, err := target.Start(context.Background(), grant)
@@ -121,9 +200,7 @@ func TestABackendThatBindsBeyondLoopbackIsKilledAndRefused(t *testing.T) {
 		t.Skip("host has no non-loopback address to probe from")
 	}
 	withHelperEnv(t)
-	shortDonorTimeouts(t)
-
-	target := NewExecTarget(helperCommand(t, "0.0.0.0:"+PlaceholderPort))
+	target := helperTarget(t, helperCommand(t, "0.0.0.0:"+PlaceholderPort))
 	grant := poolwire.LeaseGrant{LeaseID: "lease-wild", PoolID: "pool-1", DeviceIndexes: []int{0}}
 
 	addr, err := target.Start(context.Background(), grant)
@@ -146,11 +223,9 @@ func TestABackendThatBindsBeyondLoopbackIsKilledAndRefused(t *testing.T) {
 
 func TestABackendThatNeverAcceptsFailsTheStart(t *testing.T) {
 	withHelperEnv(t)
-	shortDonorTimeouts(t)
-	donorReadyTimeout = 2 * time.Second
-
 	// No bind= argument, so the helper exits immediately and nothing listens.
-	target := NewExecTarget([]string{os.Args[0], "-test.run=TestPoolDonorHelper"})
+	target := helperTarget(t, []string{os.Args[0], "-test.run=TestPoolDonorHelper"})
+	target.tunables.readyTimeout = 2 * time.Second
 	_, err := target.Start(context.Background(), poolwire.LeaseGrant{LeaseID: "lease-dead", DeviceIndexes: []int{0}})
 	if err == nil {
 		t.Fatal("a backend that never accepts should fail the start")
@@ -159,9 +234,7 @@ func TestABackendThatNeverAcceptsFailsTheStart(t *testing.T) {
 
 func TestStopTerminatesTheBackend(t *testing.T) {
 	withHelperEnv(t)
-	shortDonorTimeouts(t)
-
-	target := NewExecTarget(helperCommand(t, PlaceholderHost+":"+PlaceholderPort))
+	target := helperTarget(t, helperCommand(t, PlaceholderHost+":"+PlaceholderPort))
 	grant := poolwire.LeaseGrant{LeaseID: "lease-1", DeviceIndexes: []int{0}}
 	addr, err := target.Start(context.Background(), grant)
 	if err != nil {
@@ -183,12 +256,10 @@ func TestStopTerminatesTheBackend(t *testing.T) {
 
 func TestDevicePlaceholderReachesTheCommand(t *testing.T) {
 	withHelperEnv(t)
-	shortDonorTimeouts(t)
-
 	// The helper ignores everything but bind=, so this asserts substitution
 	// rather than behavior: an unsubstituted placeholder would leave a literal
 	// "{devices}" in argv, which the loop below would find.
-	target := NewExecTarget(append(helperCommand(t, PlaceholderHost+":"+PlaceholderPort), "devices="+PlaceholderDevices))
+	target := helperTarget(t, append(helperCommand(t, PlaceholderHost+":"+PlaceholderPort), "devices="+PlaceholderDevices))
 	grant := poolwire.LeaseGrant{LeaseID: "lease-1", DeviceIndexes: []int{2, 5}}
 	if _, err := target.Start(context.Background(), grant); err != nil {
 		t.Fatalf("Start: %v", err)

@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"nvpair-shared/clustertrust"
+	"nvpair-shared/linkq"
 	"nvpair-shared/poolwire"
 	"nvpair-shared/reach"
 )
@@ -42,6 +44,13 @@ type PeerCollector struct {
 	mesh    *clustertrust.Mesh
 	clients *clustertrust.PeerClientPool
 	chooser *reach.Chooser
+	// links records what each capacity call revealed about the path to that
+	// peer. Nothing here probes for it: a capacity sweep is a timed request that
+	// was going to happen anyway, so its round-trip time and its success or
+	// failure are free measurements. The pool planner reads the result as a
+	// GATE, not a preference — losing a donor mid-request fails the whole pool —
+	// which is why it is collected here rather than left for later.
+	links *linkq.Tracker
 
 	mu    sync.RWMutex
 	peers map[string]poolwire.Peer
@@ -53,6 +62,7 @@ func NewPeerCollector(mesh *clustertrust.Mesh) *PeerCollector {
 		mesh:    mesh,
 		clients: clustertrust.NewPeerClientPool(mesh, peerRequestTimeout),
 		chooser: reach.NewChooser(),
+		links:   linkq.NewTracker(),
 		peers:   make(map[string]poolwire.Peer),
 		last:    make(map[string]poolwire.NodeCapacity),
 	}
@@ -80,6 +90,7 @@ func (p *PeerCollector) SetPeers(peers []poolwire.Peer) {
 		if _, still := next[uuid]; !still {
 			delete(p.last, uuid)
 			p.chooser.Forget(uuid)
+			p.links.Forget(uuid)
 		}
 	}
 }
@@ -111,11 +122,14 @@ func (p *PeerCollector) Collect(ctx context.Context) map[string]poolwire.NodeCap
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			capacity, err := p.fetch(ctx, peer)
+			started := time.Now()
+			capacity, addr, err := p.fetch(ctx, peer)
+			p.links.ObserveReachable(peer.NodeUUID, err == nil)
 			if err != nil {
 				slog.Debug("pool: peer capacity unavailable", "peer", peer.NodeUUID, "err", err)
 				return
 			}
+			p.observeLink(peer.NodeUUID, addr, time.Since(started))
 			results <- capacity
 		}(peer)
 	}
@@ -137,6 +151,18 @@ func (p *PeerCollector) Collect(ctx context.Context) map[string]poolwire.NodeCap
 	return out
 }
 
+// Address returns the endpoint a peer last answered on, so a pool dials the same
+// address capacity was collected from rather than re-deriving one.
+func (p *PeerCollector) Address(nodeUUID string) (string, bool) {
+	p.mu.RLock()
+	peer, ok := p.peers[nodeUUID]
+	p.mu.RUnlock()
+	if !ok || len(peer.Addresses) == 0 {
+		return "", false
+	}
+	return p.chooser.Prefer(nodeUUID, peer.Addresses), true
+}
+
 // Last returns the most recent successful collection without re-fetching, for
 // a caller that wants the current view rather than a fresh one.
 func (p *PeerCollector) Last() map[string]poolwire.NodeCapacity {
@@ -149,46 +175,78 @@ func (p *PeerCollector) Last() map[string]poolwire.NodeCapacity {
 	return out
 }
 
-// fetch reads one peer's capacity over cluster mTLS.
-func (p *PeerCollector) fetch(ctx context.Context, peer poolwire.Peer) (poolwire.NodeCapacity, error) {
+// observeLink folds one completed capacity call into what is known about the
+// path to that peer.
+//
+// The remote end's media is not recorded, because this node cannot see it: only
+// a host can say whether its own interface is a radio, and nothing yet carries
+// that between peers. The result is a path whose class is honest about the
+// topology and whose MediaKnown is false — which is exactly what a strict pool
+// policy should refuse, and what a permissive one may accept.
+func (p *PeerCollector) observeLink(nodeUUID, addr string, rtt time.Duration) {
+	p.links.ObserveRTT(nodeUUID, rtt)
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// A peer reached by name: the address it resolved to is what decides the
+		// topology, and re-resolving it here would be a second lookup that could
+		// answer differently. Leave the class alone rather than guess.
+		return
+	}
+	topology, localMedia := linkq.PathTo(ip)
+	p.links.ObservePath(nodeUUID, topology, localMedia)
+}
+
+// Path returns what is known about the link to a peer.
+func (p *PeerCollector) Path(nodeUUID string) (linkq.Path, bool) {
+	return p.links.Path(nodeUUID)
+}
+
+// fetch reads one peer's capacity over cluster mTLS, returning the address it
+// used so the caller can classify the path.
+func (p *PeerCollector) fetch(ctx context.Context, peer poolwire.Peer) (poolwire.NodeCapacity, string, error) {
 	var out poolwire.NodeCapacity
 
 	client, ok := p.clients.Client(peer.NodeUUID)
 	if !ok {
-		return out, fmt.Errorf("no pin for peer")
+		return out, "", fmt.Errorf("no pin for peer")
 	}
 	// Confirm which of a multi-homed peer's addresses actually answers before
 	// spending a request timeout on one that never will. The chooser remembers,
 	// so this costs a probe only when the previous answer stops working.
 	addr := p.chooser.ChooseWithin(ctx, peer.NodeUUID, peer.Addresses)
 	if addr == "" {
-		return out, fmt.Errorf("no reachable address")
+		return out, "", fmt.Errorf("no reachable address")
 	}
 
 	url := "https://" + addr + poolwire.CapacityPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return out, fmt.Errorf("build request: %w", err)
+		return out, addr, fmt.Errorf("build request: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return out, fmt.Errorf("get capacity: %w", err)
+		return out, addr, fmt.Errorf("get capacity: %w", err)
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("peer returned %s", resp.Status)
+		return out, addr, fmt.Errorf("peer returned %s", resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, capacityMaxBytes))
 	if err != nil {
-		return out, fmt.Errorf("read body: %w", err)
+		return out, addr, fmt.Errorf("read body: %w", err)
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return out, fmt.Errorf("parse capacity: %w", err)
+		return out, addr, fmt.Errorf("parse capacity: %w", err)
 	}
 	out.NodeUUID = peer.NodeUUID
 	if out.NodeName == "" {
 		out.NodeName = peer.NodeName
 	}
-	return out, nil
+	return out, addr, nil
 }

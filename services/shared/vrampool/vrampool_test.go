@@ -62,12 +62,12 @@ func TestModelValidation(t *testing.T) {
 		"impossible head share": {Name: "x", Layers: 8, WeightBytes: gb, NonRepeatingBytes: 2 * gb},
 	}
 	for name, m := range cases {
-		if err := m.valid(); err == nil {
+		if err := m.Validate(); err == nil {
 			t.Errorf("%s should be invalid", name)
 		}
 	}
 	good := Model{Name: "x", Layers: 8, WeightBytes: 9 * gb, NonRepeatingBytes: gb}
-	if err := good.valid(); err != nil {
+	if err := good.Validate(); err != nil {
 		t.Errorf("a well-formed model was rejected: %v", err)
 	}
 }

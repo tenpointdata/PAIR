@@ -10,10 +10,17 @@ contribute to a pool, what it currently could contribute, and the cluster-scoped
 surface peers read that from.
 
 Refer to [GPU pooling](../../docs/gpu-pooling.mdx) for the design this
-implements, what pooling buys and costs, and which phases are done. This
-component covers the donor side: capacity, leases, the backend process, and the
-tunnel that carries the ggml RPC stream to it. It does not yet form a pool or
-run inference — nothing decides which donors to use or starts a head.
+implements and, more importantly, for what pooling buys and costs. The short
+version: it buys **capacity**, it costs **latency**, and it is for the case where
+the alternative is not running the model at all. A model that fits on one node
+should be routed there, which is what PAIR already does well.
+
+Every node runs this service and plays both roles. As a **donor** it lends VRAM:
+it reports capacity, grants leases, runs a ggml RPC backend per lease bound to
+loopback, and carries that backend's stream to the head over cluster mTLS. As a
+**head** it forms pools: it plans across the cluster, leases the donors it needs,
+opens their tunnels, starts a server against them, and keeps the leases alive for
+as long as the pool lives.
 
 ## Why this is its own service
 
@@ -48,6 +55,9 @@ channel.
 | `--node-info-url <url>` | `http://127.0.0.1:14318/v1/node-info` | Local hardware inventory |
 | `--donor-settings <path>` | _(per-user data dir)_ | Path to `pool-donor.json` |
 | `--donor-command <template>` | _(none)_ | Command that runs a ggml RPC backend for one lease. Without it this node cannot donate, and its lease endpoints answer `503` |
+| `--head-command <template>` | _(none)_ | Command that runs a pool's server. Without it this node cannot head a pool |
+| `--allow-wifi-donors` | `false` | Let a pool use a donor reached over a wireless link |
+| `--pool-headroom <fraction>` | _(built-in)_ | Fraction of a device's free VRAM a pool may claim |
 | `--log-level <level>` | `info` | `error` / `warn` / `info` / `debug`; falls back to `$NVPAIR_LOG_LEVEL`. Also changeable at runtime via `log/set-level` |
 | `--version` | | Print version and exit |
 
@@ -167,6 +177,41 @@ perfectly, and is therefore invisible.
 Each lease gets its own process on its own OS-chosen port, so two pools on one
 machine do not collide.
 
+## The pool server
+
+`--head-command` is the same kind of template, with more placeholders:
+
+| Placeholder | Becomes |
+|---|---|
+| `{host}`, `{port}` | The loopback address the pool will serve on |
+| `{model}` | The model file's path |
+| `{rpc}` | The loopback donor-link endpoints, comma-separated |
+| `{split}` | The planned tensor-split proportions |
+| `{context}` | The context length the pool was planned for |
+
+```
+--head-command "/opt/llama.cpp/bin/llama-server -m {model} --host {host} --port {port} --rpc {rpc} --tensor-split {split} -c {context} -ngl 999"
+```
+
+`{rpc}` is the whole trick. llama.cpp cannot speak TLS — `--rpc host:port` opens a
+plain TCP connection and sends the ggml protocol on it — so it is given loopback
+addresses that are not on the network, and this service is what crosses the
+network on its behalf.
+
+## What decides which donors a pool uses
+
+Planning is `nvpair-shared/vrampool`, and its inputs come from two places. Free
+VRAM comes from each node's own capacity report. Link quality comes from the
+capacity sweep itself: a sweep is a timed request that was going to happen
+anyway, so its round-trip time and its success or failure are free measurements,
+and `nvpair-shared/linkq` turns them into a class.
+
+Link quality is a **gate**, not a preference, and the reason is not performance.
+llama.cpp has no re-sharding and no failover, so a donor that drops takes the
+pool and the in-flight request with it. A wide-area donor is refused outright; a
+wireless one needs `--allow-wifi-donors`; an unmeasured link is refused because
+admitting a donor on no evidence is how a pool acquires the member that kills it.
+
 ## JSON-RPC methods (broker → manager)
 
 ### `pool/status`
@@ -221,6 +266,37 @@ a machine that is gone.
 Addresses are a ranked list, walked by `nvpair-shared/reach`, because a
 multi-homed peer has no single address every node can reach.
 
+### `pool/plan`
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"pool/plan","params":{"modelPath":"/models/big.gguf","contextTokens":8192}}
+```
+
+Answers what a pool for that model would look like — which machines, how many
+layers each, how many machine boundaries, the worst link involved — without
+forming anything. It reads the model's GGUF **header only**, never a tensor, so
+it answers before gigabytes move.
+
+`fitsOnOneNode` is the field to read first. When it is true, route the request
+instead: one node can hold the model, and routing is faster, survives that node
+going away, and needs none of this. When the model fits nowhere, the answer
+carries how far short it fell and a reason per excluded device.
+
+### `pool/form` and `pool/teardown`
+
+Bring a pool up and end it. Forming leases every donor, opens its tunnel, starts
+the server, and waits for it to actually serve — not merely to bind, because
+llama.cpp's server answers `503` for the whole time the model is loading, which
+across a pool is by far the slowest part.
+
+Failure at any step tears down everything already brought up. A half-formed pool
+is worse than none: donors hold memory for a head that is not coming, and it only
+returns when their leases lapse.
+
+Teardown stops the server first and the donors second. The other order leaves a
+running server holding streams to backends that are shutting down, which surfaces
+as a truncated transfer rather than the orderly stop it was asked for.
+
 ### `shutdown`, `log/set-level`
 
 As every other worker.
@@ -270,3 +346,10 @@ own tests do, so process startup, readiness, termination, and the wildcard-bind
 refusal all run against a real process without needing a llama.cpp build. The
 wildcard test skips itself on a host with no non-loopback address, since it would
 have nothing to probe from.
+
+Formation is tested as a real two-machine pool. The stand-in pool server reaches
+every `--rpc` endpoint it was given and only then reports itself healthy, so a
+passing test means the whole path worked: placeholder expansion, the loopback
+link, cluster mTLS, and the donor's own backend. The model is a synthetic GGUF
+built in the test — a real one is gigabytes, and a truncated one would not
+exercise the tensor table the size estimate depends on.

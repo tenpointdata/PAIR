@@ -35,18 +35,29 @@ const (
 // donorHost is the only address a donor backend may bind.
 const donorHost = "127.0.0.1"
 
-// donorReadyTimeout bounds how long a donor backend has to start accepting. A
-// cold CUDA context on a large card is slow, and failing early here would refuse
-// leases on exactly the hardware pooling exists for. A var, not a const, so a
-// test that expects a failure does not wait out a minute and a half of it.
-var donorReadyTimeout = 90 * time.Second
+// donorTunables are the durations a donor backend's lifecycle runs on. Fields
+// rather than package-level variables, for the reason poolTunables gives: a
+// global that a test shortens is a global that Stop, called from the lease
+// sweeper's goroutine, then races over.
+type donorTunables struct {
+	// readyTimeout bounds how long a backend has to start accepting. A cold
+	// CUDA context on a large card is slow, and failing early would refuse
+	// leases on exactly the hardware pooling exists for.
+	readyTimeout time.Duration
+	// readyPoll is how often readiness is retried.
+	readyPoll time.Duration
+	// stopGrace is how long a backend gets to exit on its own before it is
+	// killed.
+	stopGrace time.Duration
+}
 
-// donorReadyPoll is how often readiness is retried.
-var donorReadyPoll = 200 * time.Millisecond
-
-// donorStopGrace is how long a backend gets to exit on its own before it is
-// killed. A var so tests can shorten it.
-var donorStopGrace = 5 * time.Second
+func defaultDonorTunables() donorTunables {
+	return donorTunables{
+		readyTimeout: 90 * time.Second,
+		readyPoll:    200 * time.Millisecond,
+		stopGrace:    5 * time.Second,
+	}
+}
 
 // exposureProbeTimeout bounds one connect attempt in the loopback-only check.
 const exposureProbeTimeout = 500 * time.Millisecond
@@ -61,7 +72,8 @@ const exposureProbeTimeout = 500 * time.Millisecond
 // differs.
 type ExecTarget struct {
 	// command is the argv template. The first element is the program.
-	command []string
+	command  []string
+	tunables donorTunables
 
 	mu      sync.Mutex
 	running map[string]*donorProcess
@@ -83,7 +95,7 @@ func NewExecTarget(command []string) *ExecTarget {
 	if len(command) == 0 {
 		return nil
 	}
-	return &ExecTarget{command: command, running: make(map[string]*donorProcess)}
+	return &ExecTarget{command: command, tunables: defaultDonorTunables(), running: make(map[string]*donorProcess)}
 }
 
 // Start brings up the backend for a lease and returns its loopback address.
@@ -134,7 +146,7 @@ func (t *ExecTarget) Start(ctx context.Context, grant poolwire.LeaseGrant) (stri
 		close(proc.done)
 	}()
 
-	if err := waitForAccept(ctx, addr, donorReadyTimeout); err != nil {
+	if err := waitForAccept(ctx, addr, t.tunables); err != nil {
 		t.kill(proc)
 		return "", fmt.Errorf("donor backend never accepted on %s: %w", addr, err)
 	}
@@ -185,7 +197,7 @@ func (t *ExecTarget) kill(proc *donorProcess) {
 	select {
 	case <-proc.done:
 		return
-	case <-time.After(donorStopGrace):
+	case <-time.After(t.tunables.stopGrace):
 	}
 	_ = proc.cmd.Process.Kill()
 	<-proc.done
@@ -213,21 +225,21 @@ func freeLoopbackPort() (int, error) {
 
 // waitForAccept blocks until addr completes a TCP handshake or the deadline
 // passes.
-func waitForAccept(ctx context.Context, addr string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func waitForAccept(ctx context.Context, addr string, t donorTunables) error {
+	deadline := time.Now().Add(t.readyTimeout)
 	for {
-		conn, err := net.DialTimeout("tcp", addr, donorReadyPoll)
+		conn, err := net.DialTimeout("tcp", addr, t.readyPoll)
 		if err == nil {
 			_ = conn.Close()
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out after %s", timeout)
+			return fmt.Errorf("timed out after %s", t.readyTimeout)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(donorReadyPoll):
+		case <-time.After(t.readyPoll):
 		}
 	}
 }

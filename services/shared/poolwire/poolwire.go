@@ -135,8 +135,18 @@ const (
 	// the peer set down is one relay rather than a second browser competing for
 	// the same multicast socket.
 	MethodSetPeers = "pool/peers/set"
+	// MethodPlan answers what a pool for a model would look like, without
+	// forming one. It is the admission-control call: ask before downloading,
+	// before starting anything, and before telling a user a model is available.
+	MethodPlan = "pool/plan"
+	// MethodForm brings a pool up.
+	MethodForm = "pool/form"
+	// MethodTeardown ends one.
+	MethodTeardown = "pool/teardown"
 	// NotifyUpdated is emitted when donor settings or the capacity view change.
 	NotifyUpdated = "pool/updated"
+	// NotifyPoolChanged is emitted when a pool forms or is torn down.
+	NotifyPoolChanged = "pool/changed"
 )
 
 // Peer is one cluster member the manager should collect capacity from, as the

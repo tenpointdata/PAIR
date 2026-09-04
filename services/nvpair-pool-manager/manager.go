@@ -39,12 +39,16 @@ type Manager struct {
 	// how status reports that this node cannot lend memory at all — distinct
 	// from a node that could but has declined.
 	leases *LeaseStore
+	// pools is the head side. Nil on a node with no pool-server command, which
+	// is a separate capability from donating: a machine can lend its GPU without
+	// being able to run a pool, and the reverse.
+	pools *PoolManager
 
 	cancel context.CancelFunc
 }
 
-func NewManager(codec *Codec, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore) *Manager {
-	return &Manager{codec: codec, donor: donor, collector: collector, peers: peers, leases: leases}
+func NewManager(codec *Codec, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore, pools *PoolManager) *Manager {
+	return &Manager{codec: codec, donor: donor, collector: collector, peers: peers, leases: leases, pools: pools}
 }
 
 // Run announces readiness and serves the control channel until ctx is cancelled
@@ -125,6 +129,15 @@ func (m *Manager) handleMessage(ctx context.Context, msg *Message) {
 
 	case poolwire.MethodSetDonor:
 		m.handleSetDonor(ctx, msg)
+
+	case poolwire.MethodPlan:
+		m.handlePlan(ctx, msg)
+
+	case poolwire.MethodForm:
+		m.handleForm(ctx, msg)
+
+	case poolwire.MethodTeardown:
+		m.handleTeardown(msg)
 
 	case poolwire.MethodSetPeers:
 		var p peersParams
@@ -207,6 +220,12 @@ type statusResult struct {
 	// different problem from one that has declined, and collapsing the two hides
 	// a misconfiguration behind a switch that looks correct.
 	DonorReady bool `json:"donorReady"`
+	// Pools are the pools this node currently heads.
+	Pools []Pool `json:"pools"`
+	// HeadReady reports whether this node can run a pool's server. Separate from
+	// DonorReady because they are separate capabilities: a machine can lend its
+	// GPU without being able to head a pool, and the reverse.
+	HeadReady bool `json:"headReady"`
 	// ClusterFreeBytes is what the whole cluster could contribute right now,
 	// this node included. It is the headline number, and it is deliberately
 	// computed here rather than by each consumer, because "sum the free bytes of
@@ -235,12 +254,110 @@ func (m *Manager) status(ctx context.Context, refresh bool) statusResult {
 	if m.leases != nil {
 		leases = m.leases.Snapshot()
 	}
+	var pools []Pool
+	headReady := false
+	if m.pools != nil {
+		pools = m.pools.Pools()
+		headReady = m.pools.CanHead()
+	}
 	return statusResult{
 		Donor:            m.donor.Settings(),
 		Local:            local,
 		Peers:            peers,
 		Leases:           leases,
 		DonorReady:       m.leases != nil,
+		Pools:            pools,
+		HeadReady:        headReady,
 		ClusterFreeBytes: total,
+	}
+}
+
+// planParams is the params shape for poolwire.MethodPlan and MethodForm.
+type planParams struct {
+	PoolID string `json:"poolId"`
+	// ModelPath is a GGUF file on THIS node. Pooling reads a model's header to
+	// plan against it, and it is the head that loads and distributes the
+	// weights, so the file has to be here.
+	ModelPath     string `json:"modelPath"`
+	ContextTokens int    `json:"contextTokens"`
+}
+
+// teardownParams is the params shape for poolwire.MethodTeardown.
+type teardownParams struct {
+	PoolID string `json:"poolId"`
+}
+
+// defaultContextTokens is used when a caller does not say. A plan is only valid
+// for the length it was built for, so this is a compromise in both directions:
+// guessing large would refuse models that fit, and guessing small would form
+// pools that run out of cache mid-conversation.
+const defaultContextTokens = 4096
+
+// handlePlan answers what a pool would look like, without forming one.
+func (m *Manager) handlePlan(ctx context.Context, msg *Message) {
+	if m.pools == nil {
+		m.codec.RespondError(msg.ID, -32000, "pooling is not available on this node")
+		return
+	}
+	var p planParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil || p.ModelPath == "" {
+		m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"modelPath": "<path to a .gguf>"}`)
+		return
+	}
+	if p.ContextTokens <= 0 {
+		p.ContextTokens = defaultContextTokens
+	}
+	result, err := m.pools.Plan(ctx, p.ModelPath, p.ContextTokens)
+	if err != nil {
+		m.codec.RespondError(msg.ID, -32000, err.Error())
+		return
+	}
+	m.codec.Respond(msg.ID, result)
+}
+
+// handleForm brings a pool up.
+func (m *Manager) handleForm(ctx context.Context, msg *Message) {
+	if m.pools == nil {
+		m.codec.RespondError(msg.ID, -32000, "pooling is not available on this node")
+		return
+	}
+	var p planParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil || p.ModelPath == "" || p.PoolID == "" {
+		m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"poolId": "...", "modelPath": "<path to a .gguf>"}`)
+		return
+	}
+	if p.ContextTokens <= 0 {
+		p.ContextTokens = defaultContextTokens
+	}
+
+	pool, err := m.pools.Form(ctx, p.PoolID, p.ModelPath, p.ContextTokens)
+	if err != nil {
+		m.codec.RespondError(msg.ID, -32000, err.Error())
+		return
+	}
+	m.codec.Respond(msg.ID, pool)
+	if err := m.codec.Notify(poolwire.NotifyPoolChanged, m.status(ctx, false)); err != nil {
+		slog.Warn("failed to announce pool formation", "err", err)
+	}
+}
+
+// handleTeardown ends a pool.
+func (m *Manager) handleTeardown(msg *Message) {
+	if m.pools == nil {
+		m.codec.RespondError(msg.ID, -32000, "pooling is not available on this node")
+		return
+	}
+	var p teardownParams
+	if err := json.Unmarshal(msg.Params, &p); err != nil || p.PoolID == "" {
+		m.codec.RespondError(msg.ID, -32602, `invalid params: expected {"poolId": "..."}`)
+		return
+	}
+	if err := m.pools.Teardown(p.PoolID); err != nil {
+		m.codec.RespondError(msg.ID, -32000, err.Error())
+		return
+	}
+	m.codec.Respond(msg.ID, map[string]bool{"ok": true})
+	if err := m.codec.Notify(poolwire.NotifyPoolChanged, m.status(context.Background(), false)); err != nil {
+		slog.Warn("failed to announce pool teardown", "err", err)
 	}
 }

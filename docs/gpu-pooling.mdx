@@ -340,6 +340,15 @@ pool planner needs. That is why the accounting lands first.
    the broker does not supervise it yet, so nothing drives it in a running PAIR.
 2. **llama.cpp as an engine,** in `server` mode only. Useful on its own: a third
    engine for GGUF models.
+
+   *Deliberately skipped so far, and worth saying why.* Pooling does not need it:
+   `nvpair-pool-manager` runs `rpc-server` and `llama-server` directly from
+   command templates, the same way `nvpair-engine-manager` runs an engine from a
+   manifest. Making llama.cpp a first-class *routable* engine is a different
+   feature — it needs a discovery service key, a proxy that speaks to it, model
+   management, and desktop surface — and doing half of that would leave a third
+   engine visible in some places and absent in others. It belongs on its own, not
+   folded into this.
 3. **Donor mode,** including the loopback binding and the mutual-TLS splice.
    This is the security-critical change and deserves its own review.
 
@@ -353,6 +362,19 @@ pool planner needs. That is why the accounting lands first.
    is missing is the head half: nothing yet decides which donors to use or starts
    a `llama-server` against them.
 4. **`nvpair-pool-manager`:** formation, admission, lifecycle, teardown.
+
+   *This exists.* A head plans across the cluster, leases the donors it needs,
+   opens their tunnels, starts a server against them, and renews every lease for
+   as long as the pool lives. Admission is `pool/plan`, which reads a model's
+   GGUF header — never a tensor — so "does this fit" is answered before gigabytes
+   move, and answers `fitsOnOneNode` first, because a model that fits on one node
+   should be routed rather than pooled. A formation that fails at any step tears
+   down everything it had already brought up.
+
+   Link quality reaches the planner here, from `shared/linkq`: a capacity sweep
+   is a timed request that was going to happen anyway, so its round-trip time and
+   its outcome are free measurements. The planner uses the result as a gate,
+   which is what the failure model demands.
 5. **Integration:** pool-as-owner in the proxies, member charging in the
    scheduler, and the interface.
 

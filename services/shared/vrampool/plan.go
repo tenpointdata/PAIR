@@ -126,7 +126,7 @@ func (o Outcome) Fits() bool { return o.Plan != nil }
 // error; it is an Outcome with no Plan, which is a routine and answerable
 // result.
 func Build(model Model, contextTokens int, devices []Device, headNodeUUID string, policy Policy) (Outcome, error) {
-	if err := model.valid(); err != nil {
+	if err := model.Validate(); err != nil {
 		return Outcome{}, err
 	}
 	if contextTokens <= 0 {
@@ -379,7 +379,7 @@ func finish(model Model, contextTokens int, assignments []Assignment) *Plan {
 // faster, survives that node going away, and is what PAIR already does well.
 // Pooling is for the case where the alternative is not running at all.
 func FitsOnOne(model Model, contextTokens int, devices []Device, policy Policy) (Device, bool) {
-	if model.valid() != nil || contextTokens <= 0 {
+	if model.Validate() != nil || contextTokens <= 0 {
 		return Device{}, false
 	}
 	policy = policy.withDefaults()

@@ -21,6 +21,7 @@ import (
 	"nvpair-shared/applog"
 	"nvpair-shared/clustertrust"
 	"nvpair-shared/nodeid"
+	"nvpair-shared/vrampool"
 )
 
 // DefaultPort is the cluster-mTLS port this service binds. Fixed, like
@@ -53,6 +54,9 @@ func main() {
 	nodeInfoURL := flag.String("node-info-url", defaultNodeInfoURL, "local nvpair-node-info inventory URL")
 	donorPath := flag.String("donor-settings", "", "path to pool-donor.json (default: the per-user PAIR data dir)")
 	rpcCommand := flag.String("donor-command", "", "command template that runs a ggml RPC backend for one lease, e.g. \"/path/to/rpc-server -H {host} -p {port}\". It MUST bind {host}; a backend found listening anywhere else is killed and the lease refused. Without it this node cannot donate.")
+	headCommand := flag.String("head-command", "", "command template that runs a pool's server, e.g. \"/path/to/llama-server -m {model} --host {host} --port {port} --rpc {rpc} --tensor-split {split} -c {context} -ngl 999\". Without it this node cannot head a pool.")
+	allowWiFiDonors := flag.Bool("allow-wifi-donors", false, "let a pool use a donor reached over a wireless link. Off by default: a wireless hop is slow for every token and is the one most likely to drop, and losing a donor fails the whole pool.")
+	poolHeadroom := flag.Float64("pool-headroom", 0, "fraction of a device's free VRAM a pool may claim (0 uses the built-in default)")
 	resolveLevel := applog.RegisterFlag(nil, slog.LevelInfo)
 	flag.Parse()
 
@@ -108,6 +112,16 @@ func main() {
 	collector := NewCollector(*nodeInfoURL, donor, leases, nodeid.Resolve(""))
 	peers := NewPeerCollector(mesh)
 
+	// Heading a pool and donating to one are separate capabilities. A machine
+	// can lend its GPU without having a server build, and a laptop with a server
+	// build may have nothing worth lending, so the two commands are configured
+	// and reported independently.
+	pools := NewPoolManager(mesh, peers, collector, splitCommand(*headCommand), vrampool.Policy{
+		Headroom:        *poolHeadroom,
+		AllowWiFiDonors: *allowWiFiDonors,
+	})
+	defer pools.TeardownAll()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -139,7 +153,7 @@ func main() {
 	}()
 
 	codec := NewCodec(transport)
-	mgr := NewManager(codec, donor, collector, peers, leases)
+	mgr := NewManager(codec, donor, collector, peers, leases, pools)
 	if err := mgr.Run(ctx); err != nil && ctx.Err() == nil {
 		log.Fatalf("manager error: %v", err)
 	}

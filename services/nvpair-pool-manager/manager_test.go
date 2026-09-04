@@ -31,13 +31,13 @@ type pipePair struct {
 	io.Writer
 }
 
-func newRig(t *testing.T, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore) *rig {
+func newRig(t *testing.T, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore, pools *PoolManager) *rig {
 	t.Helper()
 
 	inR, inW := io.Pipe()   // test -> manager
 	outR, outW := io.Pipe() // manager -> test
 
-	mgr := NewManager(NewCodec(pipePair{Reader: inR, Writer: outW}), donor, collector, peers, leases)
+	mgr := NewManager(NewCodec(pipePair{Reader: inR, Writer: outW}), donor, collector, peers, leases, pools)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Run(ctx) }()
 	t.Cleanup(func() {
@@ -119,7 +119,7 @@ func newTestRig(t *testing.T) *rig {
 	donor := &DonorState{}
 	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, nil, "uuid-local")
 	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
-	return newRig(t, donor, collector, peers, nil)
+	return newRig(t, donor, collector, peers, nil, nil)
 }
 
 func TestStatusReportsLocalCapacityAndPolicy(t *testing.T) {
@@ -257,13 +257,13 @@ func TestStatusDistinguishesCannotDonateFromWillNot(t *testing.T) {
 	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, nil, "uuid-local")
 	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
 
-	unable := newRig(t, donor, collector, peers, nil)
+	unable := newRig(t, donor, collector, peers, nil, nil)
 	if got := decodeStatus(t, unable.call(poolwire.MethodStatus, nil)); got.DonorReady {
 		t.Fatal("a node with no backend command should not report itself ready to donate")
 	}
 
 	target := newEchoTarget(t)
-	able := newRig(t, donor, collector, peers, NewLeaseStore(target))
+	able := newRig(t, donor, collector, peers, NewLeaseStore(target), nil)
 	if got := decodeStatus(t, able.call(poolwire.MethodStatus, nil)); !got.DonorReady {
 		t.Fatal("a node with a backend command should report itself ready")
 	}
@@ -276,7 +276,7 @@ func TestStatusReportsOutstandingLeases(t *testing.T) {
 	leases := NewLeaseStore(newEchoTarget(t))
 	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, leases, "uuid-local")
 	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
-	r := newRig(t, donor, collector, peers, leases)
+	r := newRig(t, donor, collector, peers, leases, nil)
 
 	if _, err := leases.Grant(context.Background(), "uuid-head",
 		poolwire.LeaseRequest{PoolID: "pool-1", DeviceIndexes: []int{0}, Bytes: 6 * gb},

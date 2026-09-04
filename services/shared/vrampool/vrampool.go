@@ -152,8 +152,13 @@ func (m Model) TotalBytes(contextTokens int) uint64 {
 	return m.NonRepeatingBytes + m.PerLayerBytes(contextTokens)*uint64(max(m.Layers, 0))
 }
 
-// valid reports whether a model description can be planned against at all.
-func (m Model) valid() error {
+// Validate reports whether a model description can be planned against at all.
+//
+// Exported because the description usually comes from outside this package — a
+// GGUF header, a manifest, a caller's JSON — and the useful moment to reject a
+// malformed one is when it is read, not when a plan built from it silently
+// overcommits every device in the cluster.
+func (m Model) Validate() error {
 	switch {
 	case m.Layers <= 0:
 		return fmt.Errorf("vrampool: model %q has no layer count", m.Name)
