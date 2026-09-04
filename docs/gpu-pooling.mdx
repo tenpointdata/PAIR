@@ -340,9 +340,18 @@ pool planner needs. That is why the accounting lands first.
    the broker does not supervise it yet, so nothing drives it in a running PAIR.
 2. **llama.cpp as an engine,** in `server` mode only. Useful on its own: a third
    engine for GGUF models.
-3. **Donor mode and `nvpair-pool-agent`,** including the loopback binding and the
-   mutual-TLS splice. This is the security-critical change and deserves its own
-   review.
+3. **Donor mode,** including the loopback binding and the mutual-TLS splice.
+   This is the security-critical change and deserves its own review.
+
+   *This exists*, in `nvpair-pool-manager` rather than a separate agent — the
+   donor and head roles are two halves of one symmetric service, like every other
+   peer service in PAIR, and splitting them would have meant two processes
+   sharing one lease ledger. A donor grants leases, runs one backend process per
+   lease bound to loopback, and splices a cluster-mTLS stream to it; only the
+   node the lease was issued to may open that stream. A backend that binds
+   anything wider than loopback is detected and killed rather than trusted. What
+   is missing is the head half: nothing yet decides which donors to use or starts
+   a `llama-server` against them.
 4. **`nvpair-pool-manager`:** formation, admission, lifecycle, teardown.
 5. **Integration:** pool-as-owner in the proxies, member charging in the
    scheduler, and the interface.

@@ -35,12 +35,16 @@ type Manager struct {
 	donor     *DonorState
 	collector *Collector
 	peers     *PeerCollector
+	// leases is nil on a node with no donor command configured, which is also
+	// how status reports that this node cannot lend memory at all — distinct
+	// from a node that could but has declined.
+	leases *LeaseStore
 
 	cancel context.CancelFunc
 }
 
-func NewManager(codec *Codec, donor *DonorState, collector *Collector, peers *PeerCollector) *Manager {
-	return &Manager{codec: codec, donor: donor, collector: collector, peers: peers}
+func NewManager(codec *Codec, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore) *Manager {
+	return &Manager{codec: codec, donor: donor, collector: collector, peers: peers, leases: leases}
 }
 
 // Run announces readiness and serves the control channel until ctx is cancelled
@@ -194,6 +198,15 @@ type statusResult struct {
 	Donor poolwire.DonorSettings           `json:"donor"`
 	Local poolwire.NodeCapacity            `json:"local"`
 	Peers map[string]poolwire.NodeCapacity `json:"peers"`
+	// Leases are the grants this node is currently honoring as a donor. Reported
+	// because "my GPU is full and I did not start anything" is otherwise
+	// unanswerable from the interface.
+	Leases []poolwire.LeaseGrant `json:"leases"`
+	// DonorReady reports whether this node has a backend command configured at
+	// all. A node that has enabled donation but cannot run a backend is a
+	// different problem from one that has declined, and collapsing the two hides
+	// a misconfiguration behind a switch that looks correct.
+	DonorReady bool `json:"donorReady"`
 	// ClusterFreeBytes is what the whole cluster could contribute right now,
 	// this node included. It is the headline number, and it is deliberately
 	// computed here rather than by each consumer, because "sum the free bytes of
@@ -218,10 +231,16 @@ func (m *Manager) status(ctx context.Context, refresh bool) statusResult {
 	for _, capacity := range peers {
 		total += capacity.TotalFreeBytes()
 	}
+	var leases []poolwire.LeaseGrant
+	if m.leases != nil {
+		leases = m.leases.Snapshot()
+	}
 	return statusResult{
 		Donor:            m.donor.Settings(),
 		Local:            local,
 		Peers:            peers,
+		Leases:           leases,
+		DonorReady:       m.leases != nil,
 		ClusterFreeBytes: total,
 	}
 }

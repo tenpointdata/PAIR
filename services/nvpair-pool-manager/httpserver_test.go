@@ -21,10 +21,17 @@ import (
 // startServer runs a pool server on an OS-chosen port and returns its address.
 func startServer(t *testing.T, mesh *clustertrust.Mesh, collector *Collector) string {
 	t.Helper()
+	return startPoolServer(t, mesh, collector, nil)
+}
+
+// startPoolServer runs a pool server on an OS-chosen port and returns its
+// address.
+func startPoolServer(t *testing.T, mesh *clustertrust.Mesh, collector *Collector, leases *LeaseStore) string {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	srv := NewServer(0, mesh, collector)
+	srv := NewServer(0, mesh, collector, leases)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run(ctx) }()
 

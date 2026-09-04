@@ -31,13 +31,13 @@ type pipePair struct {
 	io.Writer
 }
 
-func newRig(t *testing.T, donor *DonorState, collector *Collector, peers *PeerCollector) *rig {
+func newRig(t *testing.T, donor *DonorState, collector *Collector, peers *PeerCollector, leases *LeaseStore) *rig {
 	t.Helper()
 
 	inR, inW := io.Pipe()   // test -> manager
 	outR, outW := io.Pipe() // manager -> test
 
-	mgr := NewManager(NewCodec(pipePair{Reader: inR, Writer: outW}), donor, collector, peers)
+	mgr := NewManager(NewCodec(pipePair{Reader: inR, Writer: outW}), donor, collector, peers, leases)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = mgr.Run(ctx) }()
 	t.Cleanup(func() {
@@ -119,7 +119,7 @@ func newTestRig(t *testing.T) *rig {
 	donor := &DonorState{}
 	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, nil, "uuid-local")
 	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
-	return newRig(t, donor, collector, peers)
+	return newRig(t, donor, collector, peers, nil)
 }
 
 func TestStatusReportsLocalCapacityAndPolicy(t *testing.T) {
@@ -246,5 +246,50 @@ func TestUnknownMethodIsRefused(t *testing.T) {
 	resp := r.call("pool/does-not-exist", nil)
 	if resp.Error == nil || resp.Error.Code != -32601 {
 		t.Fatalf("error = %+v, want method-not-found", resp.Error)
+	}
+}
+
+// A node that has enabled donation but cannot run a backend is a different
+// problem from one that has declined. Collapsing them hides a misconfiguration
+// behind a switch that looks correct.
+func TestStatusDistinguishesCannotDonateFromWillNot(t *testing.T) {
+	donor := &DonorState{}
+	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, nil, "uuid-local")
+	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
+
+	unable := newRig(t, donor, collector, peers, nil)
+	if got := decodeStatus(t, unable.call(poolwire.MethodStatus, nil)); got.DonorReady {
+		t.Fatal("a node with no backend command should not report itself ready to donate")
+	}
+
+	target := newEchoTarget(t)
+	able := newRig(t, donor, collector, peers, NewLeaseStore(target))
+	if got := decodeStatus(t, able.call(poolwire.MethodStatus, nil)); !got.DonorReady {
+		t.Fatal("a node with a backend command should report itself ready")
+	}
+}
+
+// "My GPU is full and I did not start anything" is otherwise unanswerable from
+// the interface.
+func TestStatusReportsOutstandingLeases(t *testing.T) {
+	donor := &DonorState{}
+	leases := NewLeaseStore(newEchoTarget(t))
+	collector := NewCollector(fakeNodeInfo(t, twoGPUInventory), donor, leases, "uuid-local")
+	peers := NewPeerCollector(clustertrust.Open(filepath.Join(t.TempDir(), "cluster")))
+	r := newRig(t, donor, collector, peers, leases)
+
+	if _, err := leases.Grant(context.Background(), "uuid-head",
+		poolwire.LeaseRequest{PoolID: "pool-1", DeviceIndexes: []int{0}, Bytes: 6 * gb},
+		map[int]uint64{0: 32 * gb}); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+
+	got := decodeStatus(t, r.call(poolwire.MethodStatus, nil))
+	if len(got.Leases) != 1 || got.Leases[0].PoolID != "pool-1" {
+		t.Fatalf("leases = %+v, want the outstanding grant", got.Leases)
+	}
+	// The committed memory is subtracted from what this node still offers.
+	if got.Local.Devices[0].CommittedBytes != 6*gb {
+		t.Fatalf("device 0 committed = %d, want 6 GiB", got.Local.Devices[0].CommittedBytes)
 	}
 }

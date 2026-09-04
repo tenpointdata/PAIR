@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,6 +40,11 @@ type Server struct {
 	port      int
 	mesh      *clustertrust.Mesh
 	collector *Collector
+	// leases is the donor side. Nil on a node built without pooling support, in
+	// which case the lease and tunnel endpoints answer 503 rather than being
+	// absent — a head asking a donor that cannot serve deserves a reason, not a
+	// 404 it will read as a bad address.
+	leases *LeaseStore
 
 	srv *http.Server
 
@@ -52,8 +58,8 @@ type Server struct {
 	bound chan struct{}
 }
 
-func NewServer(port int, mesh *clustertrust.Mesh, collector *Collector) *Server {
-	return &Server{port: port, mesh: mesh, collector: collector, bound: make(chan struct{})}
+func NewServer(port int, mesh *clustertrust.Mesh, collector *Collector, leases *LeaseStore) *Server {
+	return &Server{port: port, mesh: mesh, collector: collector, leases: leases, bound: make(chan struct{})}
 }
 
 // Bound is closed once the listener has a port. Addr is readable from then on.
@@ -82,6 +88,9 @@ func (s *Server) Addr() string {
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(poolwire.CapacityPath, s.handleCapacity)
+	mux.HandleFunc(poolwire.LeasesPath, s.handleLeases)
+	mux.HandleFunc(poolwire.LeasePathPrefix, s.handleLease)
+	mux.HandleFunc(poolwire.TunnelPathPrefix, s.handleTunnel)
 
 	base, err := net.Listen("tcp", ":"+strconv.Itoa(s.port))
 	if err != nil {
@@ -150,4 +159,102 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (string, bool
 		return "", false
 	}
 	return peerUUID, true
+}
+
+// leaseMaxBytes caps a lease request body. The document is a few hundred bytes;
+// the cap is here because the body arrives from the network.
+const leaseMaxBytes = 64 << 10
+
+// handleLeases grants a lease. POST only: a lease is created, never listed —
+// a peer has no business enumerating what this node has promised to others.
+func (s *Server) handleLeases(w http.ResponseWriter, r *http.Request) {
+	holder, ok := s.authorize(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.leases == nil {
+		http.Error(w, "pooling is not available on this node", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req poolwire.LeaseRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, leaseMaxBytes)).Decode(&req); err != nil {
+		http.Error(w, "invalid lease request", http.StatusBadRequest)
+		return
+	}
+
+	// Read capacity through the collector, so the answer already accounts for
+	// the owner's reservation and for every lease this node has outstanding —
+	// including, on a renewal, the one being renewed. Deriving free memory here
+	// would be a second implementation of a rule that has to hold everywhere.
+	capacity := s.collector.Local(r.Context())
+	if !capacity.DonorEnabled {
+		http.Error(w, "this node is not lending its GPUs", http.StatusForbidden)
+		return
+	}
+	available := make(map[int]uint64, len(capacity.Devices))
+	for _, d := range capacity.Devices {
+		available[d.Index] = d.FreeBytes()
+	}
+
+	grant, err := s.leases.Grant(r.Context(), holder, req, available)
+	if err != nil {
+		// A refusal is a normal answer with a reason a user can act on — "device
+		// 0 has 6 GiB free, needs 14" is the whole point of asking.
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(grant); err != nil {
+		slog.Debug("pool: writing lease grant failed", "err", err)
+	}
+}
+
+// handleLease renews (POST) or releases (DELETE) one lease.
+func (s *Server) handleLease(w http.ResponseWriter, r *http.Request) {
+	holder, ok := s.authorize(w, r)
+	if !ok {
+		return
+	}
+	if s.leases == nil {
+		http.Error(w, "pooling is not available on this node", http.StatusServiceUnavailable)
+		return
+	}
+	leaseID, ok := pathSuffix(r.URL.Path, poolwire.LeasePathPrefix)
+	if !ok {
+		http.Error(w, "bad lease id", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		var req poolwire.LeaseRequest
+		// A renewal may carry a TTL or nothing at all; an unreadable body takes
+		// the default rather than failing, because the body is not what
+		// identifies the lease.
+		_ = json.NewDecoder(io.LimitReader(r.Body, leaseMaxBytes)).Decode(&req)
+		grant, err := s.leases.Renew(holder, leaseID, req.TTL())
+		if err != nil {
+			http.Error(w, "no such lease", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(grant); err != nil {
+			slog.Debug("pool: writing lease renewal failed", "err", err)
+		}
+
+	case http.MethodDelete:
+		if err := s.leases.Release(holder, leaseID); err != nil {
+			http.Error(w, "no such lease", http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }

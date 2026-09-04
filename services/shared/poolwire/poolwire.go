@@ -161,3 +161,78 @@ type DonorSettings struct {
 	// interactive use and each display runs on one card.
 	ReservedBytes uint64 `json:"reservedBytes,omitempty"`
 }
+
+// Cluster-mTLS endpoints for donor leases and the tunnel that carries the ggml
+// RPC stream. All of them live on the same port as CapacityPath and behind the
+// same pinned-peer gate.
+const (
+	// LeasesPath grants a lease (POST). A lease is a donor node's promise to
+	// hold memory for one pool.
+	LeasesPath = "/v1/pool/leases"
+	// LeasePathPrefix addresses one lease: POST renews it, DELETE releases it.
+	LeasePathPrefix = LeasesPath + "/"
+	// TunnelPathPrefix + leaseID is the HTTP/1.1 upgrade that becomes the ggml
+	// RPC stream for that lease.
+	TunnelPathPrefix = "/v1/pool/rpc/"
+	// TunnelProtocol is the Upgrade token. It is not a registered protocol and
+	// is not meant to be: it names this stream so an accidental request from
+	// something else fails at the upgrade rather than being spliced into a
+	// tensor backend.
+	TunnelProtocol = "nvpair-ggml-rpc"
+)
+
+// LeaseRequest is a head node asking a donor to hold memory for one pool.
+type LeaseRequest struct {
+	// PoolID identifies the pool across its whole lifetime and across every
+	// donor in it, so a donor can recognize a renewal and a head can release
+	// every lease it holds after a restart.
+	PoolID string `json:"poolId"`
+	// ModelName is what the pool will serve. Carried for display and logs only —
+	// a donor lends memory and never learns what is computed in it.
+	ModelName string `json:"modelName,omitempty"`
+	// DeviceIndexes are the donor devices the head plans to use, in its
+	// inventory's own numbering.
+	DeviceIndexes []int `json:"deviceIndexes"`
+	// Bytes is what the head intends to place, across those devices together.
+	Bytes uint64 `json:"bytes"`
+	// TTLMs is how long the grant should stand without a renewal. It exists so a
+	// head that dies does not strand a donor's memory forever: the lease lapses
+	// and the memory returns on its own, with no cleanup message required from a
+	// process that is gone.
+	TTLMs int64 `json:"ttlMs,omitempty"`
+}
+
+// LeaseGrant is a donor's answer.
+type LeaseGrant struct {
+	LeaseID       string `json:"leaseId"`
+	PoolID        string `json:"poolId"`
+	DeviceIndexes []int  `json:"deviceIndexes"`
+	Bytes         uint64 `json:"bytes"`
+	ExpiresAtMs   int64  `json:"expiresAtMs"`
+}
+
+// LeaseTTLBounds constrain the requested TTL. A lease that lapses too eagerly
+// turns a busy head's missed renewal into a dead pool; one that lapses too
+// slowly strands a donor's memory after a head crashes.
+const (
+	DefaultLeaseTTL = 60 * time.Second
+	MinLeaseTTL     = 10 * time.Second
+	MaxLeaseTTL     = 10 * time.Minute
+)
+
+// TTL resolves the requested TTL against the bounds. An unset or out-of-range
+// request takes the default rather than being refused: the head is asking for
+// memory, and the renewal cadence is the donor's business to bound.
+func (r LeaseRequest) TTL() time.Duration {
+	if r.TTLMs <= 0 {
+		return DefaultLeaseTTL
+	}
+	ttl := time.Duration(r.TTLMs) * time.Millisecond
+	if ttl < MinLeaseTTL {
+		return MinLeaseTTL
+	}
+	if ttl > MaxLeaseTTL {
+		return MaxLeaseTTL
+	}
+	return ttl
+}
