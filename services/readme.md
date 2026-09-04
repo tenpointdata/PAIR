@@ -35,7 +35,7 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is a terminal client that launches and supervises its own broker rather than being supervised. `nvpair-pool-manager` is built and shipped but not yet supervised; refer to [GPU pooling](../docs/gpu-pooling.mdx) for what it is for and which phase it belongs to. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the twelve workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
 
 | Binary | Role |
 | --- | --- |
@@ -51,7 +51,7 @@ This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service 
 | `nvpair-node-settings` | Typed key-value store for per-node preferences. |
 | `nvpair-cluster-manager` | Node identity, PIN pairing, and the trusted-node store. |
 | `nvpair-job-scheduler` | Responsive scheduler combining total node queue depth across engines with smoothed GPU pressure. |
-| `nvpair-pool-manager` | Distributed inference. Donor side: donation policy, poolable VRAM, leases, and the cluster-mTLS tunnel to a loopback ggml backend. Head side: planning across the cluster, forming and tearing down pools. Not yet supervised by the broker. |
+| `nvpair-pool-manager` | Distributed inference. Donor side: donation policy, poolable VRAM, leases, and the cluster-mTLS tunnel to a loopback ggml backend. Head side: planning across the cluster, forming and tearing down pools. |
 | `nvpair-tui` | Terminal interface for headless and SSH operation; launches and supervises its own broker. |
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.

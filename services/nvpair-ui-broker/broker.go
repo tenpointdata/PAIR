@@ -23,6 +23,7 @@ import (
 	"nvpair-shared/errors"
 	"nvpair-shared/nodeid"
 	"nvpair-shared/noderec"
+	"nvpair-shared/poolwire"
 	"nvpair-shared/schedulerwire"
 
 	"nvpair-ui-broker/relay"
@@ -157,10 +158,17 @@ type Broker struct {
 	errorsPath        string
 	engineMgrPath     string
 	manualNodesPath   string
+	poolManagerPath   string
 	settingsPath      string
-	clusterMgrPath    string
-	schedulerPath     string
-	clusterDir        string
+
+	// poolDonorCommand, poolHeadCommand and poolAllowWiFiDonors are passed
+	// straight through to nvpair-pool-manager; see workerPaths.
+	poolDonorCommand    string
+	poolHeadCommand     string
+	poolAllowWiFiDonors bool
+	clusterMgrPath      string
+	schedulerPath       string
+	clusterDir          string
 	// Managed-port state is prepared before proxy startup and read by the proxy
 	// supervisor/reader goroutines. Ollama commits its pending backend move after
 	// its proxy reserves :11434; LM Studio moves through engine-manager first,
@@ -217,6 +225,7 @@ type Broker struct {
 	errorsProc    *errorsProcess
 	engineMgr     *rpcWorker
 	manualNodes   *rpcWorker
+	poolManager   *rpcWorker
 	settings      *rpcWorker
 	clusterMgr    *clusterManagerProcess
 	scheduler     *rpcWorker
@@ -232,6 +241,7 @@ type Broker struct {
 	errorsSup        *supervisor
 	engineMgrSup     *supervisor
 	manualNodesSup   *supervisor
+	poolManagerSup   *supervisor
 	settingsSup      *supervisor
 	clusterMgrSup    *supervisor
 	schedulerSup     *supervisor
@@ -334,6 +344,7 @@ type workerPaths struct {
 	errors        string
 	engineMgr     string
 	manualNodes   string
+	poolManager   string
 	settings      string
 	clusterMgr    string
 	scheduler     string
@@ -341,6 +352,18 @@ type workerPaths struct {
 	// trusted/). Threaded to every worker that does cluster-scoped inter-node
 	// mTLS so they serve/dial pinned peers once this node joins a cluster.
 	clusterDir string
+	// poolDonorCommand and poolHeadCommand are the llama.cpp command templates
+	// nvpair-pool-manager runs: a ggml RPC backend when this node lends its
+	// GPUs, and a pool server when it heads one. They are separate because the
+	// two are separate capabilities — a machine can lend memory without having a
+	// server build, and the reverse — and empty means this node does not do that
+	// half of pooling.
+	poolDonorCommand string
+	poolHeadCommand  string
+	// poolAllowWiFiDonors lets a pool use a donor reached over a wireless link.
+	// Off by default: a wireless hop is slow for every token and is the one most
+	// likely to drop, and losing a donor fails the whole pool.
+	poolAllowWiFiDonors bool
 }
 
 // NewBroker constructs a per-session broker. paths.scanner is required —
@@ -362,30 +385,34 @@ func NewBroker(codec *Codec, paths workerPaths) *Broker {
 	// its localNodeID stays in lockstep with what the broker stamps.
 	nodeID := resolveLocalNodeID(paths.clusterDir)
 	return &Broker{
-		codec:              codec,
-		startedAt:          time.Now(),
-		nodeID:             nodeID,
-		scannerPath:        paths.scanner,
-		nodeInfoPath:       paths.nodeInfo,
-		proxyPath:          paths.proxy,
-		lmstudioProxyPath:  paths.lmstudioProxy,
-		workloadMgrPath:    paths.workloadMgr,
-		errorsPath:         paths.errors,
-		engineMgrPath:      paths.engineMgr,
-		manualNodesPath:    paths.manualNodes,
-		settingsPath:       paths.settings,
-		clusterMgrPath:     paths.clusterMgr,
-		schedulerPath:      paths.scheduler,
-		clusterDir:         paths.clusterDir,
-		store:              newDiscoveryStore(),
-		telemetry:          newTelemetryCache(),
-		relayDir:           relay.NewDirectory(),
-		regCache:           relay.NewRegistrationCache(),
-		manualNodeKeys:     make(map[string]string),
-		manualNodeStatuses: make(map[string]manualNodeStatusEntry),
-		workloads:          workloadstore.New(),
-		ollamaPortReady:    make(chan struct{}),
-		lmstudioPortReady:  make(chan struct{}),
+		codec:               codec,
+		startedAt:           time.Now(),
+		nodeID:              nodeID,
+		scannerPath:         paths.scanner,
+		nodeInfoPath:        paths.nodeInfo,
+		proxyPath:           paths.proxy,
+		lmstudioProxyPath:   paths.lmstudioProxy,
+		workloadMgrPath:     paths.workloadMgr,
+		errorsPath:          paths.errors,
+		engineMgrPath:       paths.engineMgr,
+		manualNodesPath:     paths.manualNodes,
+		poolManagerPath:     paths.poolManager,
+		poolDonorCommand:    paths.poolDonorCommand,
+		poolHeadCommand:     paths.poolHeadCommand,
+		poolAllowWiFiDonors: paths.poolAllowWiFiDonors,
+		settingsPath:        paths.settings,
+		clusterMgrPath:      paths.clusterMgr,
+		schedulerPath:       paths.scheduler,
+		clusterDir:          paths.clusterDir,
+		store:               newDiscoveryStore(),
+		telemetry:           newTelemetryCache(),
+		relayDir:            relay.NewDirectory(),
+		regCache:            relay.NewRegistrationCache(),
+		manualNodeKeys:      make(map[string]string),
+		manualNodeStatuses:  make(map[string]manualNodeStatusEntry),
+		workloads:           workloadstore.New(),
+		ollamaPortReady:     make(chan struct{}),
+		lmstudioPortReady:   make(chan struct{}),
 	}
 }
 
@@ -516,6 +543,18 @@ func (b *Broker) runEngineAvailabilityAfterPortGates(
 	go runOllama(ctx)
 	runLMStudio(ctx)
 	return true
+}
+
+func (b *Broker) setPoolManager(w *rpcWorker) {
+	b.workersMu.Lock()
+	b.poolManager = w
+	b.workersMu.Unlock()
+}
+
+func (b *Broker) getPoolManager() *rpcWorker {
+	b.workersMu.Lock()
+	defer b.workersMu.Unlock()
+	return b.poolManager
 }
 
 func (b *Broker) setManualNodes(w *rpcWorker) {
@@ -1780,6 +1819,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// This prevents a restored engine from taking a persisted proxy port before
 	// the broker can resolve ownership.
 	go b.runEngineAvailabilityAfterPortGates(ctx, b.runAutoAdvertise, b.runAutoAdvertiseLMStudio)
+	// The pool manager does not browse mDNS; the broker projects the directory
+	// it already holds onto the peer set the worker needs. Harmless when no pool
+	// manager is running: the push is skipped until one is.
+	go b.runPoolPeerSync(ctx)
 
 	// nvpair-workload-manager is another auxiliary worker: it relays local
 	// workload lifecycle events to peer nodes and surfaces peer events
@@ -1807,6 +1850,10 @@ func (b *Broker) Serve(ctx context.Context) error {
 	// crash surfacing); the broker demuxes their errors:* notifications
 	// into the pipeline and relays their control-plane requests.
 	b.manualNodesSup = b.startOptionalWorker("manual-nodes", b.manualNodesPath, b.spawnManualNodes, b.clearManualNodesState)
+	// Distributed inference. Optional and non-fatal like the rest: a build
+	// without the binary, or a node that cannot run llama.cpp, is exactly
+	// today's PAIR with no pooling rather than a broker that refuses to start.
+	b.poolManagerSup = b.startOptionalWorker("pool-manager", b.poolManagerPath, b.spawnPoolManager, b.clearPoolManagerState)
 	if b.manualNodesSup != nil {
 		defer b.manualNodesSup.Stop()
 	}
@@ -2896,6 +2943,10 @@ func (b *Broker) handleMessage(msg *Message) {
 
 	case "node/add", "node/remove", "nodes/list":
 		b.relayToManualNodes(msg)
+
+	case poolwire.MethodStatus, poolwire.MethodCapacity, poolwire.MethodSetDonor,
+		poolwire.MethodPlan, poolwire.MethodForm, poolwire.MethodTeardown:
+		b.relayToPoolManager(msg)
 
 	case "engine:set-reserved-port", "internal:set-reserved-port":
 		if err := b.codec.RespondError(msg.ID, -32601, "method not found: "+msg.Method); err != nil {

@@ -270,6 +270,7 @@
 - `method (var)  (clustermanager.go)`
 - `method (var)  (errors.go)`
 - `lmstudio-proxy:*  (lmstudioproxy.go)`
+- `method (var)  (poolmanager.go)`
 - `method (var)  (proxy.go)`
 - `method (var)  (rpcworker.go, 2 sites)`
 

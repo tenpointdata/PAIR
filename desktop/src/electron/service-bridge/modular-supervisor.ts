@@ -838,6 +838,11 @@ class ModularSupervisor {
         // streams, and fans its schedule:priority out to the proxies via
         // node/set-priority (all broker-internal).
         passPath('--scheduler-path', 'job-scheduler')
+        // Distributed inference. Only the path is passed: the llama.cpp command
+        // templates that decide whether this node lends its GPUs or heads a pool
+        // are not configurable from the app yet, so the broker starts the worker
+        // with neither and it reports both capabilities as unavailable.
+        passPath('--pool-manager-path', 'pool-manager')
         return [...args, ...this.logLevelArgs()]
     }
 

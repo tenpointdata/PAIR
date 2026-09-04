@@ -45,6 +45,13 @@ stdin/stdout by default or a Unix socket / Windows named pipe via `--ipc`. Peers
 are reached over HTTPS on the cluster port; peers never touch the JSON-RPC
 channel.
 
+`nvpair-ui-broker` supervises this worker like any other, passes it the cluster
+directory and the llama.cpp command templates, registers its port as the `pl`
+service so peers can find it, and relays every method below. It also pushes the
+peer set down: discovery is the scanner's job and the broker already holds the
+consolidated directory, so a second mDNS browser here would compete for the same
+multicast socket to learn what the parent already knows.
+
 ## CLI flags
 
 | Flag | Default | Description |

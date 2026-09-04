@@ -31,6 +31,10 @@ func main() {
 	engineMgrPath := flag.String("engine-manager-path", "", "path to nvpair-engine-manager binary (default: ./nvpair-engine-manager in the current working directory)")
 	manualNodesPath := flag.String("manual-nodes-path", "", "path to nvpair-manual-nodes binary (default: ./nvpair-manual-nodes in the current working directory)")
 	settingsPath := flag.String("settings-path", "", "path to nvpair-node-settings binary (default: ./nvpair-node-settings in the current working directory)")
+	poolManagerPath := flag.String("pool-manager-path", "", "path to nvpair-pool-manager binary (default: ./nvpair-pool-manager in the current working directory)")
+	poolDonorCommand := flag.String("pool-donor-command", "", "command template nvpair-pool-manager runs to lend this node's GPUs to a pool, e.g. \"/path/to/rpc-server -H {host} -p {port}\". Empty means this node does not donate.")
+	poolHeadCommand := flag.String("pool-head-command", "", "command template nvpair-pool-manager runs to head a pool, e.g. \"/path/to/llama-server -m {model} --host {host} --port {port} --rpc {rpc} --tensor-split {split} -c {context} -ngl 999\". Empty means this node does not head pools.")
+	poolAllowWiFiDonors := flag.Bool("pool-allow-wifi-donors", false, "let a pool use a donor reached over a wireless link")
 	clusterMgrPath := flag.String("cluster-manager-path", "", "path to nvpair-cluster-manager binary (default: ./nvpair-cluster-manager in the current working directory)")
 	schedulerPath := flag.String("scheduler-path", "", "path to nvpair-job-scheduler binary (default: ./nvpair-job-scheduler in the current working directory)")
 	clusterDirFlag := flag.String("cluster-dir", "", "cluster config dir (node.crt/node.key + trusted/) the broker passes to its mDNS workers (nvpair-errors, nvpair-workload-manager, nvpair-node-info, nvpair-node-scanner, nvpair-manual-nodes) to enable cluster-scoped inter-node mTLS; defaults to the per-user Nvidia Corporation/Personal AI Router cluster/ dir, where nvpair-cluster-manager mints them")
@@ -175,6 +179,14 @@ func main() {
 		resolvedEngineMgr = ""
 	}
 
+	resolvedPoolManager, err := resolvePoolManagerPath(*poolManagerPath)
+	if err != nil {
+		if *poolManagerPath != "" {
+			fatalf("--pool-manager-path: %v", err)
+		}
+		slog.Info("no nvpair-pool-manager binary found; distributed inference is unavailable", "err", err)
+	}
+
 	resolvedManualNodes, err := resolveManualNodesPath(*manualNodesPath)
 	if err != nil {
 		if *manualNodesPath != "" {
@@ -257,10 +269,15 @@ func main() {
 		errors:        resolvedErrors,
 		engineMgr:     resolvedEngineMgr,
 		manualNodes:   resolvedManualNodes,
+		poolManager:   resolvedPoolManager,
 		settings:      resolvedSettings,
 		clusterMgr:    resolvedClusterMgr,
 		scheduler:     resolvedScheduler,
 		clusterDir:    clusterDir,
+
+		poolDonorCommand:    *poolDonorCommand,
+		poolHeadCommand:     *poolHeadCommand,
+		poolAllowWiFiDonors: *poolAllowWiFiDonors,
 	}
 	if err := NewBroker(codec, paths).Serve(ctx); err != nil && ctx.Err() == nil {
 		fatalf("broker error: %v", err)
@@ -351,6 +368,11 @@ func resolveManualNodesPath(override string) (string, error) {
 
 func resolveSettingsPath(override string) (string, error) {
 	return resolveSiblingBinary(override, "nvpair-node-settings", "--settings-path")
+}
+
+// resolvePoolManagerPath resolves the nvpair-pool-manager binary.
+func resolvePoolManagerPath(override string) (string, error) {
+	return resolveSiblingBinary(override, "nvpair-pool-manager", "--pool-manager-path")
 }
 
 func resolveClusterManagerPath(override string) (string, error) {

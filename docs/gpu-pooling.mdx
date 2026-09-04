@@ -378,6 +378,17 @@ pool planner needs. That is why the accounting lands first.
 5. **Integration:** pool-as-owner in the proxies, member charging in the
    scheduler, and the interface.
 
+   *Partly.* `nvpair-ui-broker` supervises the pool manager, registers its
+   `pl` service so peers can read this node's capacity, projects the discovery
+   directory into the peer set the worker collects from, and relays every pool
+   method and notification — so pooling is reachable from anything that speaks
+   to the broker. The rest of this phase is not done: the proxies do not yet
+   present a pool as an advertised owner, the scheduler does not charge a pool's
+   work to its members, and nothing in the desktop application shows or
+   configures any of it. The llama.cpp command templates are broker flags today,
+   which means pooling is configured by whoever launches the broker rather than
+   by a user.
+
 ## What this does not do
 
 - **It is not tensor parallelism.** Layers run in sequence, so adding nodes adds
