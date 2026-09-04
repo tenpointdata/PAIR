@@ -33,7 +33,8 @@ NVIDIA-Personal-AI-Router-<version>/
 │   ├── nvpair-engine-manager
 │   ├── nvpair-node-settings
 │   ├── nvpair-cluster-manager
-│   └── nvpair-job-scheduler
+│   ├── nvpair-job-scheduler
+│   └── nvpair-pool-manager
 └── INSTALL.md                     # this file
 ```
 

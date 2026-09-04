@@ -16,6 +16,7 @@ export type ModularProcessName =
     | 'cluster-manager'
     | 'errors'
     | 'job-scheduler'
+    | 'pool-manager'
 
 export type ModularPackageArch = 'x64' | 'arm64'
 
@@ -111,6 +112,18 @@ export const MODULAR_RUNTIME_BINARIES: ModularRuntimeBinary[] = [
         args: [],
         launchOwner: 'broker',
         needsFirewallAccess: false
+    },
+    {
+        // Serves this node's poolable VRAM — and, later, the donor leases and
+        // the ggml tunnel — on a cluster-mTLS listener, so it needs firewall
+        // access. It has no plaintext personality in any state: a node that
+        // belongs to no cluster presents no leaf and refuses every handshake.
+        processName: 'pool-manager',
+        baseName: 'nvpair-pool-manager',
+        args: [],
+        launchOwner: 'broker',
+        needsFirewallAccess: true,
+        optional: true
     },
     {
         // Client only: dials remote nodes' endpoints to probe manually added

@@ -118,6 +118,7 @@ FunctionEnd
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-node-settings.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-cluster-manager.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-job-scheduler.exe"'
+  nsExec::ExecToLog 'taskkill /F /IM "nvpair-pool-manager.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-ui-broker.exe"'
   nsExec::ExecToLog 'taskkill /F /IM "nvpair-tui.exe"'
   ; Give Windows a moment to release the handles.
@@ -177,6 +178,11 @@ Section "Install"
   ; nvpair-cluster-manager advertises over mDNS and serves the inter-node pairing /
   ; mTLS channel on TCP :14321, so it gets firewall rules below.
   File "..\build\bin\nvpair-cluster-manager.exe"
+  ; nvpair-pool-manager serves this node's poolable VRAM to paired peers over
+  ; mutually-authenticated TLS on TCP :14324, so it gets firewall rules below.
+  ; It has no plaintext personality on that port: an unclustered node presents
+  ; no leaf and refuses every handshake.
+  File "..\build\bin\nvpair-pool-manager.exe"
   ; nvpair-job-scheduler is pure stdio (no listening port, no mDNS), so it needs no
   ; firewall rule — it runs under nvpair-ui-broker and only ranks nodes for the proxies.
   File "..\build\bin\nvpair-job-scheduler.exe"
@@ -261,6 +267,12 @@ Section "Install"
   ; to paired peers over mutually-authenticated TLS on TCP :14323. It only binds
   ; when this node is clustered, but the rule is added unconditionally like the rest.
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Engine Manager Control (TCP 14323)" dir=in action=allow protocol=TCP localport=14323 program="$INSTDIR\bin\nvpair-engine-manager.exe" enable=yes profile=any remoteip=localsubnet'
+
+  ; nvpair-pool-manager serves poolable-VRAM capacity, donor leases, and the
+  ; distributed-inference tunnel to paired peers over mTLS on TCP :14324. No
+  ; mDNS rule: it doesn't advertise itself — the node-scanner daemon carries pl=
+  ; in the shared record.
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="NVPAIR Pool Manager (TCP 14324)" dir=in action=allow protocol=TCP localport=14324 program="$INSTDIR\bin\nvpair-pool-manager.exe" enable=yes profile=any remoteip=localsubnet'
 SectionEnd
 
 ;---------------------------------------
@@ -286,6 +298,7 @@ Section "Uninstall"
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR mDNS Cluster Manager (UDP 5353)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Engine Manager (TCP 14322)"'
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Engine Manager Control (TCP 14323)"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="NVPAIR Pool Manager (TCP 14324)"'
 
   ; Remove files
   Delete "$INSTDIR\bin\ollama-proxy.exe"
@@ -299,6 +312,7 @@ Section "Uninstall"
   Delete "$INSTDIR\bin\nvpair-node-settings.exe"
   Delete "$INSTDIR\bin\nvpair-cluster-manager.exe"
   Delete "$INSTDIR\bin\nvpair-job-scheduler.exe"
+  Delete "$INSTDIR\bin\nvpair-pool-manager.exe"
   Delete "$INSTDIR\bin\nvpair-ui-broker.exe"
   Delete "$INSTDIR\bin\nvpair-tui.exe"
   RMDir  "$INSTDIR\bin"

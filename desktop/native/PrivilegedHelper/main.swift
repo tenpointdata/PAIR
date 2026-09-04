@@ -43,7 +43,8 @@ enum Firewall {
         "nvpair-workload-manager",
         "nvpair-errors",
         "nvpair-cluster-manager",
-        "nvpair-engine-manager"
+        "nvpair-engine-manager",
+        "nvpair-pool-manager"
     ]
 
     static func apply(cliBinDir: String, unblock: Bool) throws {

@@ -143,25 +143,51 @@ free, right now, on every node.
 
 `nvpair-node-info` already reports `vram_bytes` and `vram_used_bytes` per GPU, so
 the raw material is present. What is missing is the cluster-wide view and the
-distinction between memory that is free and memory that is *available to lend*:
+distinction between memory that is free and memory that is *available to lend*.
+
+`nvpair-pool-manager` serves that on its own cluster-mTLS port:
 
 ```json
 {
-  "name": "NVIDIA GeForce RTX 5080",
-  "vram_bytes": 17179869184,
-  "vram_used_bytes": 2147483648,
-  "pool": {
-    "donor_enabled": true,
-    "reserved_bytes": 1073741824,
-    "committed_bytes": 0
-  }
+  "nodeUuid": "…",
+  "donorEnabled": true,
+  "devices": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 5080",
+      "totalBytes": 17179869184,
+      "usedBytes": 2147483648,
+      "reservedBytes": 1073741824,
+      "committedBytes": 0
+    }
+  ],
+  "observedAtMs": 1772668800000,
+  "telemetryValid": true
 }
 ```
 
-`reserved_bytes` is headroom the node keeps for itself — a desktop that also
-renders its own display should not lend its last gigabyte. `committed_bytes` is
+`reservedBytes` is headroom the node keeps for itself — a desktop that also
+renders its own display should not lend its last gigabyte. `committedBytes` is
 what an existing pool already claimed, so a second pool does not plan against
-memory that is spoken for.
+memory that is spoken for. It is tracked apart from `usedBytes` because a lease
+is a promise made before the memory is touched: between granting one and the
+model finishing its load, the driver still reports the memory free.
+
+<Note>
+An earlier draft of this design put these fields on `nvpair-node-info`
+alongside the hardware inventory. That was wrong, and the implementation moved
+them. node-info is deliberately plaintext and unauthenticated — a documented
+trade for hostname, GPU model, and utilization — and "this node has 40 GiB
+committed to a pool headed by that node" is not hardware inventory. It describes
+the shape of a user's cluster and what their machines have promised each other,
+which is exactly the class of thing the rule in
+[the mesh design](wide-area-mesh.mdx#security) says must never travel in the
+clear. node-info still reports only what the driver says.
+</Note>
+
+Donation is off until the machine's owner turns it on, and it is refused
+entirely while the node belongs to no cluster: there is no pinned peer who may
+legitimately ask, so there is nothing to serve.
 
 ## Planning a split
 
@@ -306,10 +332,12 @@ pool planner needs. That is why the accounting lands first.
    and per-GPU availability in `nvpair-node-info`. Testable with no engine, no
    second machine, and no GPU.
 
-   *The planner half of this exists*: `services/shared/vrampool` implements the
-   cost model, the donor policy and its rejection reasons, and the allocator, with
-   tests. Nothing imports it yet, and `nvpair-node-info` does not yet report the
-   free-VRAM and donor fields it consumes.
+   *This exists.* `services/shared/vrampool` implements the cost model, the donor
+   policy and its rejection reasons, and the allocator.
+   `services/nvpair-pool-manager` is the capacity plane: the donation policy,
+   this node's poolable VRAM, the cluster-mTLS surface peers read it from, and
+   the collector that gathers the cluster-wide view. It is built and shipped but
+   the broker does not supervise it yet, so nothing drives it in a running PAIR.
 2. **llama.cpp as an engine,** in `server` mode only. Useful on its own: a third
    engine for GGUF models.
 3. **Donor mode and `nvpair-pool-agent`,** including the loopback binding and the

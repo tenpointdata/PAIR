@@ -10,7 +10,7 @@
 // whose TXT map carries a schema version, the node's identity, its LAN address,
 // and one compact key per local service port, e.g.:
 //
-//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;er=14319;wl=14320;cl=14321;em=14322
+//	v=1;uuid=<hostUuid>;cluster-uuid=<clusterUuid>;ip=192.168.1.10;ni=14318;ol=11434;lm=1234;er=14319;wl=14320;cl=14321;em=14322;pl=14324
 //
 // Design decisions this package encodes:
 //   - SRV port is a fixed, NON-authoritative constant; consumers ignore it and
@@ -100,13 +100,20 @@ const (
 	// is pin-based mTLS (cluster peers only) because it performs privileged
 	// operations, and it binds only when the node is clustered.
 	ServiceEngineControl ServiceKey = "ec"
+	// ServicePool is nvpair-pool-manager's cluster-scoped endpoint: what this
+	// node will contribute to a distributed-inference pool, and the donor leases
+	// and tunnels built on top of it. Cluster mTLS in every state, with no plain
+	// personality at all — everything it carries is cluster state, and the tunnel
+	// it will carry fronts a protocol whose only protection is that nothing
+	// unpinned can open it.
+	ServicePool ServiceKey = "pl"
 )
 
 // serviceKeyOrder is the deterministic emit order for service ports in TXT.
 var serviceKeyOrder = []ServiceKey{
 	ServiceNodeInfo, ServiceOllama, ServiceLMStudio,
 	ServiceErrors, ServiceWorkload, ServiceCluster, ServiceEngineManager,
-	ServiceEngineControl,
+	ServiceEngineControl, ServicePool,
 }
 
 // Transport is the connection policy for a service, derived (not advertised).
@@ -128,7 +135,7 @@ const (
 // Transport returns the static transport policy for the service.
 func (s ServiceKey) Transport() Transport {
 	switch s {
-	case ServiceErrors, ServiceWorkload, ServiceEngineControl:
+	case ServiceErrors, ServiceWorkload, ServiceEngineControl, ServicePool:
 		return TransportMTLSWhenClustered
 	case ServiceCluster:
 		return TransportSplit

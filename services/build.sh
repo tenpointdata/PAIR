@@ -4,7 +4,7 @@
 
 # build.sh — NVIDIA Personal AI Router build script for Linux and macOS.
 #
-# Mirrors build.bat. Reads versions.json with jq, builds the thirteen worker
+# Mirrors build.bat. Reads versions.json with jq, builds the fourteen worker
 # binaries with -X main.Version=... ldflags, then copies them into the
 # repo-root staging bundle at:
 #
@@ -64,6 +64,7 @@ V_WLMGR=$(  jq -r --arg k 'nvpair-workload-manager' '.components[$k]' "$VERSIONS
 V_ERRORS=$( jq -r --arg k 'nvpair-errors'       '.components[$k]' "$VERSIONS_FILE")
 V_ENGMGR=$( jq -r --arg k 'nvpair-engine-manager' '.components[$k]' "$VERSIONS_FILE")
 V_NSETTINGS=$(jq -r --arg k 'nvpair-node-settings' '.components[$k]' "$VERSIONS_FILE")
+V_POOLMGR=$(jq -r --arg k 'nvpair-pool-manager' '.components[$k]' "$VERSIONS_FILE")
 V_BROKER=$( jq -r --arg k 'nvpair-ui-broker'    '.components[$k]' "$VERSIONS_FILE")
 V_CLUMGR=$( jq -r --arg k 'nvpair-cluster-manager' '.components[$k]' "$VERSIONS_FILE")
 V_SCHED=$(  jq -r --arg k 'nvpair-job-scheduler' '.components[$k]' "$VERSIONS_FILE")
@@ -84,6 +85,7 @@ printf '  nvpair-workload-mgr  = %s\n' "$V_WLMGR"
 printf '  nvpair-errors        = %s\n' "$V_ERRORS"
 printf '  nvpair-engine-manager= %s\n' "$V_ENGMGR"
 printf '  nvpair-node-settings = %s\n' "$V_NSETTINGS"
+printf '  nvpair-pool-manager  = %s\n' "$V_POOLMGR"
 printf '  nvpair-ui-broker     = %s\n' "$V_BROKER"
 printf '  nvpair-cluster-mgr   = %s\n' "$V_CLUMGR"
 printf '  nvpair-job-scheduler = %s\n' "$V_SCHED"
@@ -97,7 +99,7 @@ echo
 
 build_subbinary() {
     local idx="$1" name="$2" version="$3"
-    echo "[$idx/13] Building $name (v$version)..."
+    echo "[$idx/14] Building $name (v$version)..."
     (cd "$ROOT/$name" && go build -ldflags "-X main.Version=$version" -o "$name" .)
     echo "      OK"
 }
@@ -110,10 +112,11 @@ build_subbinary 6 nvpair-workload-manager "$V_WLMGR"
 build_subbinary 7 nvpair-errors        "$V_ERRORS"
 build_subbinary 8 nvpair-engine-manager "$V_ENGMGR"
 build_subbinary 9 nvpair-node-settings "$V_NSETTINGS"
-build_subbinary 10 nvpair-ui-broker    "$V_BROKER"
-build_subbinary 11 nvpair-cluster-manager "$V_CLUMGR"
-build_subbinary 12 nvpair-job-scheduler   "$V_SCHED"
-build_subbinary 13 nvpair-tui            "$V_TUI"
+build_subbinary 10 nvpair-pool-manager "$V_POOLMGR"
+build_subbinary 11 nvpair-ui-broker    "$V_BROKER"
+build_subbinary 12 nvpair-cluster-manager "$V_CLUMGR"
+build_subbinary 13 nvpair-job-scheduler   "$V_SCHED"
+build_subbinary 14 nvpair-tui            "$V_TUI"
 
 BIN_OUT="$ROOT/build/bin"
 
@@ -139,6 +142,7 @@ cp "$ROOT/nvpair-workload-manager/nvpair-workload-manager" "$BIN_OUT/nvpair-work
 cp "$ROOT/nvpair-errors/nvpair-errors"             "$BIN_OUT/nvpair-errors"
 cp "$ROOT/nvpair-engine-manager/nvpair-engine-manager" "$BIN_OUT/nvpair-engine-manager"
 cp "$ROOT/nvpair-node-settings/nvpair-node-settings" "$BIN_OUT/nvpair-node-settings"
+cp "$ROOT/nvpair-pool-manager/nvpair-pool-manager"   "$BIN_OUT/nvpair-pool-manager"
 cp "$ROOT/nvpair-ui-broker/nvpair-ui-broker"       "$BIN_OUT/nvpair-ui-broker"
 cp "$ROOT/nvpair-cluster-manager/nvpair-cluster-manager" "$BIN_OUT/nvpair-cluster-manager"
 cp "$ROOT/nvpair-job-scheduler/nvpair-job-scheduler" "$BIN_OUT/nvpair-job-scheduler"
@@ -158,6 +162,7 @@ printf '  Workload Mgr: %s\n' "$BIN_OUT/nvpair-workload-manager"
 printf '  Errors:       %s\n' "$BIN_OUT/nvpair-errors"
 printf '  Engine Mgr:   %s\n' "$BIN_OUT/nvpair-engine-manager"
 printf '  Node Settings:%s\n' " $BIN_OUT/nvpair-node-settings"
+printf '  Pool Manager: %s\n' " $BIN_OUT/nvpair-pool-manager"
 printf '  UI Broker:    %s\n' "$BIN_OUT/nvpair-ui-broker"
 printf '  Cluster Mgr:  %s\n' "$BIN_OUT/nvpair-cluster-manager"
 printf '  Job Scheduler:%s\n' " $BIN_OUT/nvpair-job-scheduler"

@@ -66,6 +66,7 @@ for proc in \
   "nvpair-workload-manager" \
   "nvpair-cluster-manager" \
   "nvpair-job-scheduler" \
+  "nvpair-pool-manager" \
   "nvpair-errors" \
   "nvpair-ui-broker"; do
   pkill -TERM -x "$proc" 2>/dev/null || true
@@ -75,7 +76,8 @@ sleep 1
 FW=/usr/libexec/ApplicationFirewall/socketfilterfw
 if [ -x "$FW" ]; then
   for bin in ollama-proxy lmstudio-proxy nvpair-node-info nvpair-node-scanner \
-             nvpair-workload-manager nvpair-errors nvpair-cluster-manager nvpair-engine-manager; do
+             nvpair-workload-manager nvpair-errors nvpair-cluster-manager nvpair-engine-manager \
+             nvpair-pool-manager; do
     "$FW" --remove "$APP_PATH/Contents/Resources/cli-bin/$bin" >/dev/null 2>&1 || true
   done
 fi

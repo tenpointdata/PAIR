@@ -203,6 +203,12 @@
 | `settings/set-cluster-id` | request (we call) | ✅ yes |
 | `settings/set-force-ports` | request (we call) | ⚠️ not called |
 
+## nvpair-pool-manager
+
+| Method | Direction | In bridge? |
+|---|---|---|
+| `ready` | notification (we consume) | ✅ yes |
+
 ## nvpair-tui
 
 | Method | Direction | In bridge? |

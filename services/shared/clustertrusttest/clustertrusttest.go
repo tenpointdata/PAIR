@@ -136,3 +136,74 @@ func mintLeaf(t *testing.T, uuid string) (certPEM, keyPEM []byte) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
 		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
+
+// Node is one member's minted identity: the principal plus the actual leaf that
+// carries it.
+//
+// It exists because the helpers above mint a fresh leaf on every call, which is
+// right when a test only needs SOME pin to exist and wrong the moment two nodes
+// have to complete a handshake with each other. A pin for uuid-b that was minted
+// independently of the keypair node B presents is a pin B can never satisfy, so
+// a test built from those helpers alone can assert membership but can never
+// exchange a byte. Holding the identity lets the same certificate be written on
+// one side and pinned on the other.
+type Node struct {
+	UUID    string
+	CertPEM []byte
+	KeyPEM  []byte
+}
+
+// MintNode returns a fresh identity for uuid without writing it anywhere.
+func MintNode(t *testing.T, uuid string) Node {
+	t.Helper()
+	certPEM, keyPEM := mintLeaf(t, uuid)
+	return Node{UUID: uuid, CertPEM: certPEM, KeyPEM: keyPEM}
+}
+
+// WriteNode installs n as the owner of clusterDir and activates a membership in
+// clusterID, so clustertrust.Open reads it as a live member presenting n's leaf.
+func WriteNode(t *testing.T, clusterDir, clusterID string, n Node) {
+	t.Helper()
+	if err := os.MkdirAll(clusterDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clusterDir, "node.crt"), n.CertPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clusterDir, "node.key"), n.KeyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	WriteAdmission(t, clusterDir, clusterID, 1)
+}
+
+// PinNode pins n's ACTUAL certificate into clusterDir, making n a principal the
+// owner of that dir will accept — and, unlike WritePeerPin, one that n itself can
+// satisfy.
+func PinNode(t *testing.T, clusterDir string, n Node) {
+	t.Helper()
+	trusted := filepath.Join(clusterDir, "trusted")
+	if err := os.MkdirAll(trusted, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]string{"nodeUuid": n.UUID, "certPem": string(n.CertPEM)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trusted, n.UUID+".json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Pair sets up two nodes in one cluster, each in its own directory, mutually
+// pinned to the other's real certificate — the state two machines reach after a
+// successful PIN pairing, and the minimum needed for either to call the other.
+func Pair(t *testing.T, clusterID, aDir, bDir, aUUID, bUUID string) (a, b Node) {
+	t.Helper()
+	a = MintNode(t, aUUID)
+	b = MintNode(t, bUUID)
+	WriteNode(t, aDir, clusterID, a)
+	WriteNode(t, bDir, clusterID, b)
+	PinNode(t, aDir, b)
+	PinNode(t, bDir, a)
+	return a, b
+}

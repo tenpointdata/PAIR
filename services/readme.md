@@ -35,7 +35,7 @@ see the [root README](../README.md#what-is-supported).
 
 ## Architecture
 
-This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is the thirteenth: a terminal client that launches and supervises its own broker rather than being supervised. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
+This tree builds fourteen Go binaries. `nvpair-ui-broker` is the parent service and supervises the eleven workers, all spawned at startup — only the scanner is required, and a missing binary for any other leaves the broker running without that capability. `nvpair-tui` is a terminal client that launches and supervises its own broker rather than being supervised. `nvpair-pool-manager` is built and shipped but not yet supervised; refer to [GPU pooling](../docs/gpu-pooling.mdx) for what it is for and which phase it belongs to. Processes communicate via newline-delimited JSON-RPC 2.0 over stdio or, optionally, a Unix socket / Windows named pipe.
 
 | Binary | Role |
 | --- | --- |
@@ -51,11 +51,12 @@ This tree builds thirteen Go binaries. `nvpair-ui-broker` is the parent service 
 | `nvpair-node-settings` | Typed key-value store for per-node preferences. |
 | `nvpair-cluster-manager` | Node identity, PIN pairing, and the trusted-node store. |
 | `nvpair-job-scheduler` | Responsive scheduler combining total node queue depth across engines with smoothed GPU pressure. |
+| `nvpair-pool-manager` | Distributed-inference capacity plane: this node's donation policy, its poolable VRAM, and the cluster-mTLS surface peers read it from. Not yet supervised by the broker. |
 | `nvpair-tui` | Terminal interface for headless and SSH operation; launches and supervises its own broker. |
 
 Shared code lives in the local `shared/` Go module (imported as `nvpair-shared/…`, replaced via `replace nvpair-shared => ../shared`). It provides logging, wire types, JSON-RPC and IPC, discovery records, mDNS, network monitoring, stable node identity, application data paths, and cluster trust helpers.
 
-Three packages there belong to work that is designed but not yet wired up, and nothing imports them yet: `shared/linkq` classifies the link to each peer (wired, wireless, cellular; measured round-trip time and throughput), `shared/peerbook` is the durable address book that lets a peer be found without a multicast announcement, and `shared/vrampool` plans a model across several nodes' VRAM. Refer to [Wide-area mesh](../docs/wide-area-mesh.mdx) and [GPU pooling](../docs/gpu-pooling.mdx) for what they are for, and for why link quality becomes a correctness question rather than a performance one once a model spans machines.
+Four packages there belong to distributed-inference and wide-area work in progress. `shared/vrampool` plans a model across several nodes' VRAM and `shared/poolwire` is the wire format `nvpair-pool-manager` speaks; both are live. `shared/linkq` classifies the link to each peer (wired, wireless, cellular; measured round-trip time and throughput) and `shared/peerbook` is the durable address book that lets a peer be found without a multicast announcement; nothing imports those two yet. Refer to [Wide-area mesh](../docs/wide-area-mesh.mdx) and [GPU pooling](../docs/gpu-pooling.mdx) for what they are for, and for why link quality becomes a correctness question rather than a performance one once a model spans machines.
 
 The mDNS responder is our own rather than the host's, because Windows ships none. It sets `SO_REUSEADDR` so it shares UDP 5353 with sibling PAIR processes and with a system responder — `avahi-daemon` on Linux, Bonjour where present — needing no configuration on either platform.
 
@@ -86,8 +87,8 @@ shared/                   Shared Go module (nvpair-shared/…)
 eap-noob/                 EAP-NOOB implementation used by cluster pairing
 tests/                    Cross-process integration tests (separate go.mod)
 versions.json             Single source of truth for every component version
-build.bat                 Builds all thirteen binaries (Windows)
-build.sh                  Builds all thirteen binaries (Linux)
+build.bat                 Builds all fourteen binaries (Windows)
+build.sh                  Builds all fourteen binaries (Linux)
 VERSIONING.md             SemVer rules and version-bump workflow
 ```
 
@@ -117,7 +118,7 @@ On Linux and macOS:
 ./build.sh
 ```
 
-Both scripts read `versions.json`, build all thirteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
+Both scripts read `versions.json`, build all fourteen Go binaries with `-X main.Version=…` ldflags, and stage them together in `services/build/bin/`.
 
 Do **not** build individual components by hand without also copying their binaries into `build/bin/`: the broker will silently keep using the older binary there.
 
@@ -192,7 +193,7 @@ cd shared
 go test ./...
 ```
 
-**Every one of the thirteen binaries has tests**, as do `shared/` and
+**Every one of the fourteen binaries has tests**, as do `shared/` and
 `eap-noob/`. Depth varies with how much behaviour a component carries:
 `nvpair-engine-manager` and `nvpair-cluster-manager` have the largest suites,
 while a component with one test file may still hold twenty test functions in it.
