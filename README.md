@@ -309,3 +309,139 @@ an untrusted or shared network. Do not report vulnerabilities in a public issue.
 This project is licensed under the [Apache License 2.0](LICENSE). See
 [Third-Party Software Notices](THIRD_PARTY_NOTICES.md) for bundled dependencies.
 Inference engines, models, and other software used with PAIR may have separate terms.
+
+<a id="tenpointdata-engineering-review-2026-11-02"></a>
+
+## Tenpointdata engineering review — 2026-11-02
+
+Upstream Personal AI Router fork with four local commits adding mesh/pooling designs and reusable Go primitives; 55 upstream-main-only commits at comparison.
+
+### Fork and upstream ownership
+
+- Reviewed source: `3513e4e75f09077eab7e91c2a4439bb3a6f006a0` on `main`.
+- Upstream: [NVIDIA/Personal-AI-Router](https://github.com/NVIDIA/Personal-AI-Router).
+- At the review snapshot, the fork had 4 fork-only and 55 upstream-only commits relative to `85f523d3624cf1596bdda6e36c28eb8ad3969737`. [Read the pinned comparison context](https://github.com/tenpointdata/PAIR/compare/main...NVIDIA:main). These counts are historical evidence, not a claim about today's latest release.
+- Preserve full existing AGENTS.md including DCO sign-off, SPDX, no casts/unknown signatures, generated service-contract ownership and no sensitive logging. Keep design-vs-implemented status explicit; link the next bounded mesh milestone and bridge refactor issues.
+
+### Setup and native verification
+
+Go >=1.25, Node >=25.5.0, npm and jq according to Makefile/desktop package. Avoid starting the desktop, installers, or live multi-node tests during docs-only review.
+
+| Command | Owning source | Review execution |
+| --- | --- | --- |
+| make check | Makefile and AGENTS.md | Not run |
+| npm run dead-code:check (from desktop) | desktop/package.json and AGENTS.md | Not run |
+| make test | Makefile | Not run |
+| go test ./... (from affected services module/shared) | AGENTS.md and Makefile | Not run |
+
+The full original `AGENTS.md` remains intact. Do not replace the split desktop typecheck, generated service-contract check or dead-code gate with a generic checker. Current native gates and the targeted source-length remediation issue remain authoritative. Every new file needs its SPDX header; commits use the configured author and `git commit -s`.
+
+### Architecture and trust boundaries
+
+Electron/React desktop client, Go broker and worker services, shared Go packages. Services own routing/discovery/cryptography; renderer remains a consumer. Mesh/VRAM primitives exist but runtime integration is not shipped.
+
+Read SECURITY.md and design trust boundaries: loopback/local endpoints differ from cluster mTLS; PIN is bootstrap only; maintain certificate pinning for candidate addresses. No live networks, pairing, engine installation or inference requests exercised. No undisclosed exploit details posted.
+
+### Operations and release evidence
+
+This review did not deploy, pair nodes, install engines, publish packages, change credentials, run live data queries or enable repository Actions. Preserve existing workflow restrictions. A release needs its own immutable source/artifact receipt, passed native contracts, real acceptance gates and rollback target. Upstream release text is not proof that this fork shipped that release.
+
+### Roadmap
+
+Use [the dated review](#tenpointdata-dated-review) for the consolidated issue map and inspected paths. GitHub issues own current state. Record fork patches, upstream imports and intentional divergences with their compatibility evidence instead of duplicating inconsistent checklists.
+
+
+<a id="tenpointdata-dated-review"></a>
+
+### Dated review — 2026-11-02
+
+- Repository: [tenpointdata/PAIR](https://github.com/tenpointdata/PAIR)
+- Source: `3513e4e75f09077eab7e91c2a4439bb3a6f006a0` on `main`.
+- Scope: source-only review of the paths listed below plus complete API tree enumeration.
+- Limits: only sampled code received semantic/type review; native builds, live services, authenticated product acceptance and dependency/security advisories were not tested.
+
+### Prioritized next work
+
+| Priority | Canonical issue | Next action |
+| --- | --- | --- |
+| P2 | [PAIR#2](https://github.com/tenpointdata/PAIR/issues/2) | Connect peerbook endpoint gossip as the next bounded mesh milestone |
+| P2 | [PAIR#3](https://github.com/tenpointdata/PAIR/issues/3) | Split the Electron service bridge into bounded typed state and lifecycle modules |
+
+Each issue includes source evidence and acceptance criteria. Open issues/PRs were checked before filing. These are fork-owned actions; upstream issues are not duplicated automatically.
+
+### Ideas, status and provenance
+
+Upstream Personal AI Router fork with four local commits adding mesh/pooling designs and reusable Go primitives; 55 upstream-main-only commits at comparison. At the review snapshot, the fork had 4 fork-only and 55 upstream-only commits relative to `85f523d3624cf1596bdda6e36c28eb8ad3969737`. [Read the pinned comparison context](https://github.com/tenpointdata/PAIR/compare/main...NVIDIA:main). These counts are historical evidence, not a claim about today's latest release.
+
+Preserve full existing AGENTS.md including DCO sign-off, SPDX, no casts/unknown signatures, generated service-contract ownership and no sensitive logging. Keep design-vs-implemented status explicit; link the next bounded mesh milestone and bridge refactor issues.
+
+### Security exploration
+
+Read SECURITY.md and design trust boundaries: loopback/local endpoints differ from cluster mTLS; PIN is bootstrap only; maintain certificate pinning for candidate addresses. No live networks, pairing, engine installation or inference requests exercised. No undisclosed exploit details posted.
+
+Potentially sensitive security findings belong in the established private reporting channel; no exploit payloads or credentials are included here.
+
+### Source quality and reuse
+
+The complete immutable-blob line scan covered 321 tracked files in its declared TS/JS/HTML/CSS/Vue/Svelte suffix scope and found 7 above 600 physical lines. [The full line inventory](#tenpointdata-source-line-inventory) records the suffixes, exact paths, blob IDs and any gaps. It does not count TypeScript `any`; the following examples were independently inspected. The broader shared checker also includes SVG/MDX, and any additional findings or incomplete embedded-language coverage are recorded below.
+
+| Path | Physical lines | Confirmed explicit-any sample lines |
+| --- | --- | --- |
+| desktop/src/electron/service-bridge/modular-state.ts | 2639 | No confirmed type-use in this sample |
+| desktop/src/electron/service-bridge/modular-supervisor.ts | 2229 | No confirmed type-use in this sample |
+
+These files exceed the 600-line policy and remain open remediation work. The new standards do not grant inherited/generated code an exception or claim the corpus is compliant. Preserve public schema inference, generated-interface ownership and meaningful compatibility tests when extracting modules.
+
+### Inspected paths
+
+- `AGENTS.md`
+- `README.md`
+- `SECURITY.md`
+- `Makefile`
+- `desktop/package.json`
+- `docs/known-issues.mdx`
+- `docs/wide-area-mesh.mdx`
+- `docs/gpu-pooling.mdx`
+- `services/shared/peerbook/peerbook.go`
+- `services/shared/peerbook/store.go`
+- `services/shared/vrampool/vrampool.go`
+- `services/shared/vrampool/plan.go`
+- `services/shared/linkq/linkq.go`
+- `desktop/src/electron/service-bridge/modular-state.ts`
+- `desktop/src/electron/service-bridge/modular-supervisor.ts`
+
+### Validation receipt
+
+| Check | Result | Limit |
+| --- | --- | --- |
+| Repository/tree and upstream comparison | Read-only source snapshot, refs and tree enumerated | Time-bound to the SHAs above |
+| Source line inventory | 321 files; 7 over 600 in the declared suffix scope | No full semantic/type-check or runtime claim |
+| Native commands | Documented from owned manifests; not run | Build environments/live services not provisioned |
+| Issue support | has_issues false -> true, read-back verified | Only this setting changed; Actions/visibility unchanged |
+| Prepared documentation | Instruction precedence, links and whitespace checked | Remote CI and runtime acceptance remain separate |
+
+Extended shared-checker result (SVG/MDX included): `incomplete`, 334 files; rule counts `{"line-limit": 8, "ts-suppression": 5, "type-coverage": 13}`. Unsupported embedded-language coverage remains unverified, not passing. New tooling files contribute to selected-file counts but had no source-rule violations.
+
+
+Resume with https://github.com/tenpointdata/PAIR/issues/2. This PR records standards and current evidence; its linked product fixes remain open.
+
+
+<a id="tenpointdata-source-line-inventory"></a>
+
+### Source line inventory
+
+Revision: `3513e4e75f09077eab7e91c2a4439bb3a6f006a0`. Literal newline count with final unterminated line counted; bytes verified against immutable git blob SHA. Local git cat-file reads repair text-normalized GraphQL responses when needed.
+
+Scope: Every matching tracked file, including upstream, vendored, generated, fixtures and examples; no exemptions were applied. Suffixes: `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.mts`, `.cts`, `.vue`, `.svelte`, `.astro`, `.html`, `.htm`, `.css`, `.scss`, `.sass`, `.less`.
+
+321 files checked; 7 exceeded 600 lines. Explicit-any analysis is separate.
+
+| File | Lines | Git blob |
+| --- | --- | --- |
+| desktop/src/ui/lib/kaizen-ui-foundations/components.css | 9351 | 2e045cf3cfc24ad49cafd26cb4bb3fbaf5f6e6c7 |
+| desktop/src/electron/service-bridge/modular-state.ts | 2639 | ab6c5fb53147cb00cf4c520d51d4d4c5dea4c916 |
+| desktop/src/electron/service-bridge/modular-supervisor.ts | 2229 | 943d0f84831a4e43b98a5ad6f000aa8cb126d039 |
+| desktop/src/ui/lib/kaizen-ui-foundations/base-external.css | 1482 | e3cdd2b266429d1950c3ea877a619b8b72c0bad3 |
+| desktop/src/electron/service-bridge/empty-handlers.ts | 981 | dc5c2dd87eeb5bf9a8498aa30dc13e2dd89b4205 |
+| desktop/tests/modular/node-info-poll-cycle.test.ts | 668 | 7cc5dca3afcd3fa4ea56b57967a986633df46d65 |
+| desktop/scripts/analyze-dead-code.ts | 645 | 187a745537072c72a460ea951012ba672ec018f9 |
